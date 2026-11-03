@@ -3,6 +3,11 @@
 `@obbyx/sdk` has two halves: a **paywall** for sellers (Express) and
 **payingFetch** for buyers (agents, services, the CLI).
 
+```sh
+npm i @obbyx/sdk @x402/core obyte
+npm i express        # for ObytePaywall
+```
+
 ## Seller: paywall
 
 ```ts

@@ -1,11 +1,12 @@
 # Quickstart on testnet
 
 Run a facilitator, a paid demo API and pay for a request from the command
-line — all on Obyte **testnet**. Requires Node 24 and pnpm.
+line — all on Obyte **testnet**. Requires Node 24.
 
 ```sh
-pnpm install
-pnpm build
+npm i -g @obbyx/cli            # the obbyx command
+git clone https://github.com/Taump/obbyx.git && cd obbyx
+pnpm install && pnpm build     # the facilitator and the demo run from source
 ```
 
 ## 1. Wallets
@@ -14,17 +15,17 @@ The buyer needs testnet bytes; the seller only needs an address to be paid to.
 
 ```sh
 # buyer wallet (~/.obbyx/wallet-testnet.json, mode 0600)
-node packages/cli/dist/main.js init
+obbyx init
 # seller address: a second wallet in another directory
-OBBYX_HOME=~/.obbyx-seller node packages/cli/dist/main.js init
+OBBYX_HOME=~/.obbyx-seller obbyx init
 ```
 
 Fund the **buyer** wallet from the testnet faucet (0.5–1 GBYTE, once per 24
 hours per device) and wait until the bytes are stable:
 
 ```sh
-node packages/cli/dist/main.js faucet
-node packages/cli/dist/main.js balance
+obbyx faucet
+obbyx balance
 ```
 
 `obbyx faucet` talks to the "Faucet Bot" listed by the testnet hub over the
@@ -54,7 +55,7 @@ PAY_TO=<seller address> SELLER_SECRET=$(openssl rand -hex 32) LOG_PRETTY=1 node 
 ## 4. Pay for a request
 
 ```sh
-node packages/cli/dist/main.js pay http://127.0.0.1:3402/api/fortune --max 0.00001
+obbyx pay http://127.0.0.1:3402/api/fortune --max 0.00001
 ```
 
 What happens:

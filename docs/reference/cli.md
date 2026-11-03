@@ -2,8 +2,7 @@
 
 # CLI reference
 
-Run from the repository after `pnpm build`: `node packages/cli/dist/main.js <command>` (Node 24+;
-the commands below are written as `obbyx`). Every command also prints its section with `--help`.
+Install: `npm i -g @obbyx/cli` (Node 24+). Every command also prints its section with `--help`.
 
 ## obbyx
 

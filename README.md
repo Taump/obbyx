@@ -1,5 +1,10 @@
 # obbyx
 
+[![@obbyx/sdk](https://img.shields.io/npm/v/@obbyx/sdk?label=%40obbyx%2Fsdk)](https://www.npmjs.com/package/@obbyx/sdk)
+[![@obbyx/x402-obyte](https://img.shields.io/npm/v/@obbyx/x402-obyte?label=%40obbyx%2Fx402-obyte)](https://www.npmjs.com/package/@obbyx/x402-obyte)
+[![@obbyx/cli](https://img.shields.io/npm/v/@obbyx/cli?label=%40obbyx%2Fcli)](https://www.npmjs.com/package/@obbyx/cli)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **x402 payments on [Obyte](https://obyte.org).** A facilitator, a seller SDK, a
 buyer SDK, a CLI and a seller watcher that let any HTTP API charge per request
 in GBYTE or Obyte assets using the [x402](https://x402.org) protocol, and let
@@ -16,7 +21,7 @@ agents and services pay for them within explicit limits.
 ## Contents
 
 - [How it works](#how-it-works)
-- [Requirements](#requirements)
+- [Install](#install)
 - [Quickstart on testnet](#quickstart-on-testnet)
 - [Payment channels](#payment-channels)
 - [Playground](#playground)
@@ -162,21 +167,36 @@ fall back to `exact` otherwise.
 | CLI            | `packages/cli` (`obbyx`)                            | wallet, faucet, pay, channels, diagnostics, logs                                            |
 | Demo           | `apps/demo`                                         | a paid demo API and a playground page                                                       |
 
-## Requirements
+## Install
 
-- **Node.js 24** (`.nvmrc`)
-- **pnpm 12** — `corepack enable`, or prefix commands with `npx pnpm@12.16.1`
-- macOS or Linux; Docker optional
+Requires **Node.js 24**.
+
+### Packages (npm)
+
+| Package                                                                | Install                             | For                                                                     |
+| ---------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
+| [`@obbyx/cli`](https://www.npmjs.com/package/@obbyx/cli)               | `npm i -g @obbyx/cli`               | the `obbyx` command: wallet, faucet, pay, channels                      |
+| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `ObyteExactServer`) and buyers (`payingFetch`) |
+| [`@obbyx/x402-obyte`](https://www.npmjs.com/package/@obbyx/x402-obyte) | `npm i @obbyx/x402-obyte obyte`     | the Obyte mechanisms for the official `@x402/*` packages                |
+| [`@obbyx/obyte`](https://www.npmjs.com/package/@obbyx/obyte)           | installed with the above            | networks, amounts, validation, wallet, logger                           |
+
+```sh
+npm i -g @obbyx/cli
+obbyx --help
+```
+
+### Services (from source)
+
+The facilitator, the seller watcher and the demo are services, not npm
+packages: run them from the repository (or with Docker, see
+[Running the facilitator](#running-the-facilitator)).
 
 ```sh
 git clone https://github.com/Taump/obbyx.git
 cd obbyx
-pnpm install
+pnpm install        # pnpm 12: `npm i -g pnpm@12.16.1`, or prefix with `npx pnpm@12.16.1`
 pnpm build
 ```
-
-Below, `obbyx` means `node packages/cli/dist/main.js` (add
-`alias obbyx="node $PWD/packages/cli/dist/main.js"` to your shell).
 
 ## Quickstart on testnet
 

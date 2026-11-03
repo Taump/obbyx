@@ -20,6 +20,10 @@ Contract tests run the official packages against obbyx on every CI run
 
 ## Official client (`@x402/fetch`)
 
+```sh
+npm i @x402/fetch @obbyx/x402-obyte obyte
+```
+
 GBYTE is not one of the client's default (USD) assets, so the client rejects
 Obyte offers unless spend controls allow them. Always set a cap:
 
@@ -43,6 +47,10 @@ For v1 sellers use `registerV1('obyte-testnet', …)` with the same mechanism an
 allow `network: 'obyte-testnet'` in spend controls.
 
 ## Official seller (`@x402/express`)
+
+```sh
+npm i @x402/express @x402/core @obbyx/sdk
+```
 
 ```ts
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
