@@ -1,0 +1,72 @@
+{
+  "_source": "Obyte testnet hub, fetched 2026-11-03 (get_joint, get_definition). Public ledger data.",
+  "channel": {
+    "address": "XQJX4Y7HSBXLDX2CP66XSOMRDLJMLQSQ",
+    "definition": [
+      "autonomous agent",
+      {
+        "base_aa": "4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ",
+        "params": {
+          "addressA": "G6J737PFGXI22ZEVS2SZKJCUWAWY2CNC",
+          "addressB": "J4Y5MVWQR7XSPCDVBEDQDR72T2MGAVA5",
+          "asset": "base",
+          "salt": "7ee1f3b85356abf02b4bf63645dd7e62cb58896a81570dbe99",
+          "timeout": 1000
+        }
+      }
+    ]
+  },
+  "authorDefinition": {
+    "address": "G6J737PFGXI22ZEVS2SZKJCUWAWY2CNC",
+    "definition": ["sig", { "pubkey": "At29fa4WgM5lEM6ueOXILQ1LKWQMRRBQLXkCEGfvgyC9" }]
+  },
+  "unit": {
+    "version": "3.0t",
+    "alt": "2",
+    "messages": [
+      {
+        "app": "data",
+        "payload_location": "inline",
+        "payload_hash": "SXlLV4Y3stMX9D1jSII6niRnIOnQ+DpuropBgKrDY+8=",
+        "payload": { "confirm": 1, "period": 6 }
+      },
+      {
+        "app": "payment",
+        "payload_location": "inline",
+        "payload_hash": "aFFfByXwu8qjJ+Zm+9jtdPDCLw1sqtZId2Ktx9MUrNs=",
+        "payload": {
+          "inputs": [
+            {
+              "unit": "RUiA4B1A8eIxsIO6cL7WN7wqlNJHSHagNqhLW3tNqKE=",
+              "message_index": 1,
+              "output_index": 0
+            }
+          ],
+          "outputs": [
+            { "address": "G6J737PFGXI22ZEVS2SZKJCUWAWY2CNC", "amount": 27348 },
+            { "address": "XQJX4Y7HSBXLDX2CP66XSOMRDLJMLQSQ", "amount": 10000 }
+          ]
+        }
+      }
+    ],
+    "authors": [
+      {
+        "address": "G6J737PFGXI22ZEVS2SZKJCUWAWY2CNC",
+        "authentifiers": {
+          "r": "OJ7ReVc4WLoFfgyvk543WUciRgl9xe6M/ip+/2vqCMcQF/4dZUrhd/hh9KCDtHPEhjcUo1rCdvQf51xiZtOjDA=="
+        }
+      }
+    ],
+    "parent_units": [
+      "IwzEVKfXmdTsUHysWaB8x5zQTvhdNLDisMzTxHg0VTw=",
+      "gsKWV2WYaNWuOxERrfpbXT57GTHblwzLlK+4Nm15SQw="
+    ],
+    "last_ball": "HwdwnsDkAJ0es400RX5jpyHFSqtgeHsrOjbCItCFKHQ=",
+    "last_ball_unit": "W7mMLXIFxR0U+hzT28q4+6p0OBsf+AQqJCCSX3SM8Yo=",
+    "timestamp": 1598263955,
+    "witness_list_unit": "TvqutGPz3T4Cs6oiChxFlclY92M2MvCvfXR5/FETato=",
+    "headers_commission": 452,
+    "payload_commission": 432,
+    "unit": "DxPSVW8pKg0N/VBYPi4tzOtCzX5Au+FeoGsi8uMEMTo="
+  }
+}

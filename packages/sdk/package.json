@@ -1,0 +1,78 @@
+{
+  "name": "@obbyx/sdk",
+  "version": "0.1.0",
+  "description": "Accept and make x402 payments on Obyte: Express paywall, adapter for the official @x402 servers, paying fetch with spending budgets",
+  "keywords": [
+    "x402",
+    "obyte",
+    "paywall",
+    "payments",
+    "express",
+    "agents",
+    "http-402"
+  ],
+  "license": "MIT",
+  "author": "Alexander Ponomarev",
+  "homepage": "https://github.com/Taump/obbyx/tree/master/packages/sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Taump/obbyx.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/Taump/obbyx/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": {
+    ".": {
+      "@obbyx/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@obbyx/obyte": "workspace:^",
+    "@obbyx/x402-obyte": "workspace:^",
+    "@x402/core": "^2.29.0",
+    "obyte": "0.2.1",
+    "zod": "^4.6.7"
+  },
+  "peerDependencies": {
+    "express": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@x402/express": "2.29.0",
+    "@x402/extensions": "2.29.0",
+    "@x402/fetch": "2.29.0",
+    "express": "^5.3.0"
+  }
+}

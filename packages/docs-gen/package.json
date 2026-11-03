@@ -1,0 +1,20 @@
+{
+  "name": "@obbyx/docs-gen",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generates the reference pages of the docs site from the code (config schemas, CLI, error codes, OpenAPI)",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "gen": "tsx --conditions=@obbyx/source src/main.ts"
+  },
+  "dependencies": {
+    "@obbyx/obyte": "workspace:*",
+    "@obbyx/x402-obyte": "workspace:*",
+    "zod": "^4.6.7"
+  }
+}

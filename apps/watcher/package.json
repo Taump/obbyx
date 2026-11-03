@@ -1,0 +1,37 @@
+{
+  "name": "@obbyx/watcher",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Seller watcher for Obyte AA payment channels: stores vouchers, closes channels, answers disputes",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "obbyx-watcher": "./dist/main.js"
+  },
+  "scripts": {
+    "generate": "prisma generate < /dev/null",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "build": "prisma generate < /dev/null && tsc -p tsconfig.build.json",
+    "typecheck": "prisma generate < /dev/null && tsc -p tsconfig.json --noEmit",
+    "dev": "tsx --conditions=@obbyx/source src/main.ts",
+    "start": "prisma migrate deploy && node dist/main.js"
+  },
+  "dependencies": {
+    "@obbyx/obyte": "workspace:*",
+    "@obbyx/x402-obyte": "workspace:*",
+    "@prisma/adapter-better-sqlite3": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "obyte": "0.2.1",
+    "prisma": "7.10.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "fastify": "^5.12.8",
+    "ws": "^8.22.1"
+  }
+}

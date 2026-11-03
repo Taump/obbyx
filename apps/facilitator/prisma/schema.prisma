@@ -1,0 +1,116 @@
+// obbyx facilitator database (SQLite, one facilitator process per file — ADR-0005).
+// Amounts are decimal strings (atomic units; BigInt in code).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// `exact` settlement state machine (ADR-0002).
+model ExactSettlement {
+  key             String  @id
+  network         String
+  unitHash        String  @map("unit_hash")
+  binding         String
+  payer           String
+  payTo           String  @map("pay_to")
+  asset           String
+  amount          String
+  state           String
+  /// Signed unit JSON; pruned after a terminal state + retention.
+  unitJson        String? @map("unit_json")
+  publishDeadline Int     @map("publish_deadline")
+  attempts        Int     @default(0)
+  lastError       String? @map("last_error")
+  createdAt       Int     @map("created_at")
+  updatedAt       Int     @map("updated_at")
+
+  @@index([state])
+  @@map("exact_settlements")
+}
+
+/// Append-only payment event journal (logging stream 2).
+model Event {
+  id        Int     @id @default(autoincrement())
+  ts        Int
+  key       String
+  kind      String
+  fromState String? @map("from_state")
+  toState   String? @map("to_state")
+  data      String?
+
+  @@index([key])
+  @@map("events")
+}
+
+/// batch-settlement channel state (ADR-0003).
+model BatchChannel {
+  key        String @id
+  network    String
+  aa         String
+  payTo      String @map("pay_to")
+  payer      String
+  asset      String
+  period     Int
+  committed  String
+  pendingSeq Int?   @map("pending_seq")
+  updatedAt  Int    @map("updated_at")
+
+  @@map("batch_channels")
+}
+
+/// Voucher journal read by the sellers' watchers (seq = cursor).
+model BatchCommitment {
+  seq           Int    @id @default(autoincrement())
+  channelKey    String @map("channel_key")
+  network       String
+  aa            String
+  payTo         String @map("pay_to")
+  period        Int
+  amountSpent   String @map("amount_spent")
+  paymentAmount String @map("payment_amount")
+  binding       String
+  packageHash   String @unique @map("package_hash")
+  packageJson   String @map("package_json")
+  state         String
+  createdAt     Int    @map("created_at")
+  committedAt   Int?   @map("committed_at")
+
+  @@index([payTo, seq])
+  @@map("batch_commitments")
+}
+
+/// Written at startup to take the exclusive database lock.
+model Instance {
+  id        Int @id
+  pid       Int
+  startedAt Int @map("started_at")
+
+  @@map("instance")
+}
+
+/// Bazaar discovery catalog (x402 extension), filled from verified payments.
+model DiscoveryResource {
+  key          String  @id
+  resource     String
+  type         String
+  method       String?
+  x402Version  Int     @map("x402_version")
+  scheme       String
+  network      String
+  payTo        String  @map("pay_to")
+  acceptsJson  String  @map("accepts_json")
+  extensions   String?
+  description  String?
+  mimeType     String? @map("mime_type")
+  serviceName  String? @map("service_name")
+  tags         String?
+  lastUpdated  String  @map("last_updated")
+
+  @@index([network, scheme])
+  @@map("discovery_resources")
+}

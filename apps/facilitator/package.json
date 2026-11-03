@@ -1,0 +1,40 @@
+{
+  "name": "@obbyx/facilitator",
+  "version": "0.0.0",
+  "private": true,
+  "description": "x402 facilitator service for the Obyte network",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "obbyx-facilitator": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "prisma generate < /dev/null && tsc -p tsconfig.build.json",
+    "typecheck": "prisma generate < /dev/null && tsc -p tsconfig.json --noEmit",
+    "dev": "tsx --conditions=@obbyx/source src/main.ts",
+    "start": "prisma migrate deploy && node dist/main.js",
+    "generate": "prisma generate < /dev/null",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@obbyx/obyte": "workspace:*",
+    "@obbyx/x402-obyte": "workspace:*",
+    "@prisma/adapter-better-sqlite3": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "@x402/core": "2.29.0",
+    "@x402/extensions": "2.29.0",
+    "fastify": "^5.12.8",
+    "obyte": "0.2.1",
+    "prisma": "7.10.1",
+    "ws": "^8.22.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

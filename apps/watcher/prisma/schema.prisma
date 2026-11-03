@@ -1,0 +1,65 @@
+// obbyx seller watcher database (SQLite, one watcher process per file).
+// Holds the client-signed vouchers that defend the seller's channels — keep it
+// private and backed up. Amounts are decimal strings (atomic units).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+/// Vouchers received from the facilitator (seq = facilitator journal cursor).
+model Voucher {
+  seq           Int    @id
+  network       String
+  aa            String
+  period        Int
+  amountSpent   String @map("amount_spent")
+  paymentAmount String @map("payment_amount")
+  binding       String
+  packageJson   String @map("package_json")
+  receivedAt    Int    @map("received_at")
+
+  @@index([aa, period])
+  @@map("vouchers")
+}
+
+/// Channels this watcher defends (params from the on-chain AA definition).
+model Channel {
+  aa        String @id
+  network   String
+  payer     String
+  asset     String
+  timeout   Int
+  firstSeen Int    @map("first_seen")
+
+  @@map("channels")
+}
+
+/// On-chain triggers sent by the watcher (close / confirm / fraud_proof).
+model Action {
+  id        Int     @id @default(autoincrement())
+  aa        String
+  period    Int
+  kind      String
+  unit      String?
+  status    String
+  error     String?
+  createdAt Int     @map("created_at")
+  updatedAt Int     @map("updated_at")
+
+  @@unique([aa, period, kind])
+  @@map("actions")
+}
+
+/// Written at startup to take the exclusive database lock.
+model Instance {
+  id        Int @id
+  pid       Int
+  startedAt Int @map("started_at")
+
+  @@map("instance")
+}

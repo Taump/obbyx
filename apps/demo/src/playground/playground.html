@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>obbyx playground — x402 on Obyte testnet</title>
+    <style>
+      :root {
+        --bg: #f7f7f5;
+        --panel: #ffffff;
+        --ink: #1d1d1f;
+        --muted: #6b6b70;
+        --line: #e4e4e0;
+        --accent: #2457d6;
+        --ok: #1f8a4c;
+        --warn: #b26a00;
+        --bad: #c0392b;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141416;
+          --panel: #1c1c1f;
+          --ink: #ececef;
+          --muted: #9a9aa2;
+          --line: #2c2c31;
+          --accent: #7aa2ff;
+          --ok: #4cc38a;
+          --warn: #e0a040;
+          --bad: #ff6b5e;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      header {
+        padding: 20px 28px 8px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      header p {
+        margin: 4px 0 0;
+        color: var(--muted);
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(260px, 340px) 1fr;
+        gap: 20px;
+        padding: 16px 28px 40px;
+      }
+      @media (max-width: 800px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 16px;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin: 12px 0 4px;
+      }
+      select,
+      textarea {
+        width: 100%;
+        font: inherit;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--ink);
+      }
+      textarea {
+        font-family: var(--mono);
+        font-size: 13px;
+        min-height: 80px;
+      }
+      .buttons {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+        flex-wrap: wrap;
+      }
+      button {
+        font: inherit;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: #fff;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+      .meta {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 14px;
+        word-break: break-all;
+      }
+      .meta code {
+        font-family: var(--mono);
+        color: var(--ink);
+      }
+      ol.steps {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .step {
+        border-left: 3px solid var(--line);
+        padding: 4px 0 14px 16px;
+        position: relative;
+      }
+      .step::before {
+        content: '';
+        position: absolute;
+        left: -7px;
+        top: 9px;
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        background: var(--line);
+      }
+      .step.ok::before {
+        background: var(--ok);
+      }
+      .step.ok {
+        border-color: var(--ok);
+      }
+      .step.warn::before {
+        background: var(--warn);
+      }
+      .step.warn {
+        border-color: var(--warn);
+      }
+      .step.bad::before {
+        background: var(--bad);
+      }
+      .step.bad {
+        border-color: var(--bad);
+      }
+      .step.req::before {
+        background: var(--accent);
+      }
+      .title {
+        font-weight: 600;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 2px 12px;
+        margin: 6px 0 0;
+        font-size: 13px;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        font-family: var(--mono);
+        word-break: break-all;
+      }
+      pre {
+        font-family: var(--mono);
+        font-size: 12px;
+        background: var(--bg);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 8px;
+        overflow: auto;
+        max-height: 240px;
+        margin: 6px 0 0;
+      }
+      a {
+        color: var(--accent);
+      }
+      .empty {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>obbyx playground</h1>
+      <p>
+        A real x402 payment on <strong>Obyte testnet</strong>: request → 402 offer → signed payment
+        → settlement → response.
+      </p>
+    </header>
+    <main>
+      <section class="panel" aria-label="Request">
+        <label for="route">Paid route</label>
+        <select id="route"></select>
+        <div id="dataBox">
+          <label for="data">JSON body</label>
+          <textarea id="data">{ "hello": "obyte" }</textarea>
+        </div>
+        <div class="buttons">
+          <button id="pay">Pay and call</button>
+          <button id="offer" class="secondary">Only show the offer</button>
+          <button id="retry" class="secondary" hidden>Retry pending payment</button>
+        </div>
+        <div class="meta" id="meta">Loading…</div>
+      </section>
+      <section class="panel" aria-label="Steps" aria-live="polite">
+        <ol class="steps" id="steps">
+          <li class="empty">Run a request to see each step.</li>
+        </ol>
+      </section>
+    </main>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const gbyte = (n) =>
+        `${(Number(n) / 1e9).toFixed(9).replace(/0+$/, '').replace(/\.$/, '')} GBYTE`;
+      let info;
+      let pendingHeader;
+
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+      }
+      function fields(obj) {
+        const dl = el('dl');
+        for (const [k, v] of Object.entries(obj)) {
+          if (v === undefined || v === null || v === '') continue;
+          dl.append(el('dt', '', k), el('dd', '', String(v)));
+        }
+        return dl;
+      }
+
+      function render(steps) {
+        const list = $('steps');
+        list.replaceChildren();
+        pendingHeader = undefined;
+        $('retry').hidden = true;
+        for (const s of steps) {
+          const li = el('li', 'step');
+          if (s.kind === 'request') {
+            li.classList.add('req');
+            li.append(el('div', 'title', `${s.method} ${new URL(s.url).pathname}`));
+            if (s.payment) {
+              li.append(
+                el(
+                  'div',
+                  'sub',
+                  `with payment (${s.payment.scheme}, x402 v${s.payment.x402Version})`,
+                ),
+              );
+              li.append(
+                fields({
+                  unit: s.payment.unit,
+                  channel: s.payment.channel,
+                  cumulative: s.payment.cumulative && gbyte(s.payment.cumulative),
+                }),
+              );
+            } else li.append(el('div', 'sub', 'no payment'));
+          } else if (s.kind === 'response') {
+            const cls = s.status === 402 ? 'warn' : s.status < 400 ? 'ok' : 'bad';
+            li.classList.add(cls);
+            li.append(
+              el('div', 'title', `HTTP ${s.status}${s.status === 402 ? ' Payment Required' : ''}`),
+            );
+            for (const o of s.offer ?? []) {
+              li.append(el('div', 'sub', `offer: ${o.scheme}`));
+              li.append(
+                fields({
+                  amount: gbyte(o.amount),
+                  payTo: o.payTo,
+                  network: o.network,
+                  binding: o.binding,
+                  'valid until': o.validUntil && new Date(o.validUntil * 1000).toLocaleTimeString(),
+                }),
+              );
+            }
+            if (s.settlement) {
+              li.append(
+                el(
+                  'div',
+                  'sub',
+                  s.settlement.success ? 'settled' : `not settled: ${s.settlement.errorReason}`,
+                ),
+              );
+              li.append(
+                fields({
+                  transaction: s.settlement.transaction,
+                  payer: s.settlement.payer,
+                  amount: s.settlement.amount && gbyte(s.settlement.amount),
+                }),
+              );
+            }
+            if (s.explorer) {
+              const a = el('a', '', 'open in the testnet explorer');
+              a.href = s.explorer;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              li.append(a);
+            }
+            if (s.body !== undefined) li.append(el('pre', '', JSON.stringify(s.body, null, 2)));
+          } else if (s.kind === 'pending') {
+            li.classList.add('warn');
+            li.append(
+              el('div', 'title', 'Payment not final yet'),
+              el(
+                'div',
+                'sub',
+                'Testnet can take a few minutes. Retrying reuses the same payment — it never pays twice.',
+              ),
+            );
+            li.append(fields({ transaction: s.transaction }));
+            pendingHeader = s.paymentHeader;
+            $('retry').hidden = false;
+          } else {
+            li.classList.add('bad');
+            li.append(el('div', 'title', 'Error'), el('div', 'sub', s.message));
+          }
+          list.append(li);
+        }
+      }
+
+      async function run(extra) {
+        for (const b of document.querySelectorAll('button')) b.disabled = true;
+        $('steps').replaceChildren(
+          el('li', 'empty', 'Working… (signing, broadcasting and waiting for the facilitator)'),
+        );
+        const name = $('route').value;
+        let data;
+        if (info.routes[name].method === 'POST') {
+          try {
+            data = JSON.parse($('data').value || '{}');
+          } catch {
+            render([{ kind: 'error', message: 'The body is not valid JSON' }]);
+            return done();
+          }
+        }
+        try {
+          const res = await fetch('/playground/run', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ route: name, data, ...extra }),
+          });
+          const out = await res.json();
+          render(
+            res.ok ? out.steps : [{ kind: 'error', message: out.error ?? `HTTP ${res.status}` }],
+          );
+        } catch (e) {
+          render([{ kind: 'error', message: String(e) }]);
+        }
+        done();
+      }
+      function done() {
+        for (const b of document.querySelectorAll('button')) b.disabled = false;
+      }
+
+      $('pay').onclick = () => run({});
+      $('offer').onclick = () => run({ pay: false });
+      $('retry').onclick = () => run({ paymentHeader: pendingHeader });
+      $('route').onchange = () => {
+        $('dataBox').hidden = info.routes[$('route').value].method !== 'POST';
+      };
+
+      fetch('/playground/info')
+        .then((r) => r.json())
+        .then((i) => {
+          info = i;
+          for (const [name, r] of Object.entries(i.routes)) {
+            const o = el('option', '', `${r.method} ${r.path} — ${gbyte(r.price)}`);
+            o.value = name;
+            $('route').append(o);
+          }
+          $('route').onchange();
+          $('meta').replaceChildren(
+            'Buyer (testnet wallet on this server): ',
+            el('code', '', i.buyer),
+            el('br'),
+            'Network: ',
+            el('code', '', i.network),
+          );
+        });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,52 @@
+# obbyx on Obyte testnet. Facilitator only:  docker compose up -d facilitator
+# With a seller watcher (channels):            docker compose --profile watcher up -d
+services:
+  facilitator:
+    build: { context: ., args: { APP: facilitator } }
+    image: obbyx-facilitator
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0 # inside the container; publish only on localhost below
+      DB_PATH: /data/facilitator.db
+      PACKAGE_KEY_FILE: /data/package.key
+      NETWORKS: obyte:testnet
+      FINALITY: stable
+      # FACILITATOR_API_KEYS: change-me   # required before exposing it beyond localhost
+    ports:
+      - '127.0.0.1:4021:4021'
+    volumes:
+      - facilitator-data:/data
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:4021/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  watcher:
+    profiles: [watcher]
+    build: { context: ., args: { APP: watcher } }
+    image: obbyx-watcher
+    restart: unless-stopped
+    depends_on:
+      facilitator: { condition: service_healthy }
+    environment:
+      NETWORK: obyte:testnet
+      FACILITATOR_URL: http://facilitator:4021
+      DB_PATH: /data/watcher.db
+      OBBYX_HOME: /wallet
+    volumes:
+      - watcher-data:/data
+      # Seller wallet created with `obbyx init` (wallet-testnet.json, mode 0600).
+      # The container runs as uid 1000 ("node"); on Linux the wallet file must be
+      # readable by that uid (or set `user:` to the owner's uid).
+      - ${OBBYX_SELLER_HOME:-~/.obbyx-seller}:/wallet:ro
+
+volumes:
+  facilitator-data:
+  watcher-data:

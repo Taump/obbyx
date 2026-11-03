@@ -1,0 +1,14 @@
+{
+  "name": "aa-channel-binding-spike",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Executable checks against the real channel AA (aa-testkit): signed binding, watcher/CLI triggers",
+  "scripts": {
+    "test": "mocha --timeout 600000 test.cjs test-watcher-actions.cjs"
+  },
+  "dependencies": {
+    "aa-testkit": "github:valyakin/aa-testkit",
+    "chai": "^4.5.0",
+    "mocha": "^10.8.2"
+  }
+}

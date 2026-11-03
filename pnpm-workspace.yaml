@@ -1,0 +1,17 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+minimumReleaseAgeExclude:
+  - '@vitest/mocker@5.1.0'
+  - '@vitest/spy@5.1.0'
+  - vitest@5.1.0
+
+# Dependencies allowed to run install scripts (everything else is blocked).
+allowBuilds:
+  esbuild: true
+  # Prisma (chosen for apps): migration/schema engines and the SQLite driver binary.
+  '@prisma/engines': true
+  prisma: true
+  better-sqlite3: true
+  # Ships prebuilt binaries (node-gyp-build) with a pure-JS fallback; no compile step needed.
+  secp256k1: false

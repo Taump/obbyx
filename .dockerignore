@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/src/generated
+**/data
+docs/.vitepress/cache
+docs/.vitepress/dist
+docs/public/api
+coverage
+.git
+.env
+.env.*
+spikes
+*.log

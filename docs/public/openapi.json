@@ -1,0 +1,746 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "obbyx facilitator",
+    "version": "0.0.0",
+    "description": "x402 facilitator for the Obyte network (schemes exact and batch-settlement). Non-custodial: it never holds funds. /verify is read-only; /settle broadcasts (exact) or commits a voucher via the seller watcher (batch-settlement) and is idempotent."
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "PaymentRequirements": {
+        "type": "object",
+        "properties": {
+          "scheme": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "batch-settlement"
+            ]
+          },
+          "network": {
+            "type": "string",
+            "description": "CAIP-2 id: obyte:testnet or obyte:livenet (v1: obyte-testnet / obyte-livenet)"
+          },
+          "asset": {
+            "type": "string",
+            "description": "\"base\" (GBYTE) or an Obyte asset id"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Amount in the smallest units (v1: maxAmountRequired)"
+          },
+          "payTo": {
+            "type": "string",
+            "description": "Seller Obyte address"
+          },
+          "maxTimeoutSeconds": {
+            "type": "integer"
+          },
+          "extra": {
+            "type": "object",
+            "properties": {
+              "binding": {
+                "type": "string",
+                "description": "64 hex chars: HMAC binding of this offer to one request"
+              },
+              "quoteId": {
+                "type": "string"
+              },
+              "validUntil": {
+                "type": "integer",
+                "description": "Unix seconds"
+              },
+              "paymentFlow": {
+                "type": "string",
+                "enum": [
+                  "authorization",
+                  "upfront",
+                  "escrow"
+                ]
+              },
+              "baseAa": {
+                "type": "string",
+                "description": "batch-settlement: channel base AA"
+              },
+              "minTimeout": {
+                "type": "integer",
+                "description": "batch-settlement: minimum dispute window, s"
+              }
+            },
+            "required": [
+              "binding",
+              "quoteId",
+              "validUntil"
+            ]
+          }
+        },
+        "required": [
+          "scheme",
+          "network",
+          "asset",
+          "amount",
+          "payTo",
+          "maxTimeoutSeconds",
+          "extra"
+        ]
+      },
+      "PaymentPayload": {
+        "type": "object",
+        "properties": {
+          "x402Version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "accepted": {
+            "$ref": "#/components/schemas/PaymentRequirements"
+          },
+          "resource": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              }
+            }
+          },
+          "payload": {
+            "type": "object",
+            "properties": {
+              "unit": {
+                "type": "object",
+                "description": "exact: the signed, unbroadcast Obyte unit"
+              },
+              "voucher": {
+                "type": "object",
+                "description": "batch-settlement: the signed channel voucher"
+              }
+            }
+          },
+          "extensions": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "x402Version",
+          "payload"
+        ]
+      },
+      "Request": {
+        "type": "object",
+        "properties": {
+          "x402Version": {
+            "type": "integer",
+            "enum": [
+              1,
+              2
+            ]
+          },
+          "paymentPayload": {
+            "$ref": "#/components/schemas/PaymentPayload"
+          },
+          "paymentRequirements": {
+            "$ref": "#/components/schemas/PaymentRequirements"
+          }
+        },
+        "required": [
+          "x402Version",
+          "paymentPayload",
+          "paymentRequirements"
+        ]
+      },
+      "VerifyResponse": {
+        "type": "object",
+        "properties": {
+          "isValid": {
+            "type": "boolean"
+          },
+          "invalidReason": {
+            "type": "string",
+            "description": "Machine-readable reason, see the error codes reference"
+          },
+          "invalidMessage": {
+            "type": "string"
+          },
+          "payer": {
+            "type": "string",
+            "description": "Payer Obyte address"
+          }
+        },
+        "required": [
+          "isValid"
+        ]
+      },
+      "SettleResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "errorReason": {
+            "type": "string",
+            "description": "e.g. settlement_pending (retry the same request later)"
+          },
+          "errorMessage": {
+            "type": "string"
+          },
+          "payer": {
+            "type": "string"
+          },
+          "transaction": {
+            "type": "string",
+            "description": "Unit hash (exact) or commitment id (batch-settlement); non-empty when pending"
+          },
+          "network": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string"
+          },
+          "extra": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "success",
+          "transaction",
+          "network"
+        ]
+      },
+      "Supported": {
+        "type": "object",
+        "properties": {
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "x402Version": {
+                  "type": "integer"
+                },
+                "scheme": {
+                  "type": "string"
+                },
+                "network": {
+                  "type": "string"
+                },
+                "extra": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "required": [
+                "x402Version",
+                "scheme",
+                "network"
+              ]
+            }
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "signers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "kinds"
+        ]
+      },
+      "DiscoveryResource": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "x402Version": {
+            "type": "integer"
+          },
+          "accepts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaymentRequirements"
+            }
+          },
+          "lastUpdated": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "serviceName": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "extensions": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "resource",
+          "type",
+          "x402Version",
+          "accepts",
+          "lastUpdated"
+        ]
+      },
+      "Refusal": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
+  "paths": {
+    "/verify": {
+      "post": {
+        "summary": "Check a payment without moving funds",
+        "security": [
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification result (also for an invalid payment)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyResponse"
+                }
+              }
+            },
+            "headers": {
+              "EXTENSION-RESPONSES": {
+                "description": "base64 JSON, e.g. {\"bazaar\":{\"status\":\"success\"}}",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_json / missing_parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key (when FACILITATOR_API_KEYS is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than BODY_LIMIT_BYTES"
+          },
+          "429": {
+            "description": "Rate limit exceeded (RATE_LIMIT_PER_MINUTE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settle": {
+      "post": {
+        "summary": "Settle a verified payment (idempotent; repeat the same request while pending)",
+        "security": [
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Settlement result; errorReason settlement_pending means \"retry later\"",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_json / missing_parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key (when FACILITATOR_API_KEYS is set)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body larger than BODY_LIMIT_BYTES"
+          },
+          "429": {
+            "description": "Rate limit exceeded (RATE_LIMIT_PER_MINUTE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refusal"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/supported": {
+      "get": {
+        "summary": "Schemes, networks and extensions this facilitator serves",
+        "responses": {
+          "200": {
+            "description": "Supported kinds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Supported"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/discovery/resources": {
+      "get": {
+        "summary": "Bazaar: list cataloged paid resources",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "payTo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scheme",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of resources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x402Version": {
+                      "type": "integer"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DiscoveryResource"
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "properties": {
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "offset": {
+                          "type": "integer"
+                        },
+                        "total": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Discovery is disabled"
+          }
+        }
+      }
+    },
+    "/discovery/search": {
+      "get": {
+        "summary": "Bazaar: search cataloged resources (all words must match)",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "payTo",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scheme",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching resources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "x402Version": {
+                      "type": "integer"
+                    },
+                    "resources": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DiscoveryResource"
+                      }
+                    },
+                    "pagination": {
+                      "type": "object",
+                      "properties": {
+                        "limit": {
+                          "type": "integer"
+                        },
+                        "cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "query is required"
+          },
+          "404": {
+            "description": "Discovery is disabled"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness and basic state",
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "networks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "finality": {
+                      "type": "string",
+                      "enum": [
+                        "stable",
+                        "accepted"
+                      ]
+                    },
+                    "activeSettlements": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 JSON"
+          }
+        }
+      }
+    }
+  }
+}
