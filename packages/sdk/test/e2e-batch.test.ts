@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import express from 'express';
 import obyte from 'obyte';
-import { HTTPFacilitatorClient } from '@x402/core/http';
+import {
+  HTTPFacilitatorClient,
+  decodePaymentRequiredHeader,
+  decodePaymentResponseHeader,
+  encodePaymentSignatureHeader,
+} from '@x402/core/http';
 import { OBYTE_NETWORKS, channelAddress, channelDefinition } from '@obbyx/obyte';
 import { createLogger } from '@obbyx/obyte/logger';
 import {
@@ -202,10 +207,34 @@ const until = async (cond: () => boolean | Promise<boolean>, ms = 3000) => {
   }
 };
 
+/** Starts the seller's watcher and waits until the facilitator accepted its login. */
+const connectWatcher = async () => {
+  link.start();
+  await until(() => link.connected);
+};
+
+/**
+ * A voucher signed for the CURRENT offer of `q` with a deposit the client
+ * believes in (`claimedBalance`), bypassing the client's own balance check.
+ */
+async function signDespiteBalance(q: string, claimedBalance: number) {
+  const offer = await fetch(`${base}/api/q`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ q }),
+  });
+  const required = decodePaymentRequiredHeader(offer.headers.get('PAYMENT-REQUIRED')!);
+  const accepted = required.accepts.find((a) => a.scheme === 'batch-settlement')!;
+  const truth = hub.aaVars.get(AA);
+  hub.aaVars.set(AA, { ...truth, balanceB: claimedBalance });
+  const signed = await batchClient().createPaymentPayload(2, accepted);
+  hub.aaVars.set(AA, truth!);
+  return encodePaymentSignatureHeader({ x402Version: 2, accepted, payload: signed.payload });
+}
+
 describe('end to end: AA channel payments (batch-settlement)', () => {
   it('pays per call with cumulative vouchers; the watcher holds every paid voucher', async () => {
-    link.start();
-    await until(() => link.connected);
+    await connectWatcher();
 
     const first = await ask('a');
     expect(first.response.status).toBe(200);
@@ -234,16 +263,14 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
     // The facilitator refused at verification (watcher not connected): nothing pending anywhere.
     expect(channels.get(AA)?.pending).toBeNull();
 
-    link.start();
-    await until(() => link.connected);
+    await connectWatcher();
     const paid = await ask('x');
     expect(paid.response.status).toBe(200);
     expect(channels.get(AA)).toMatchObject({ committed: 100n });
   });
 
   it('a voucher whose ack is lost stays pending; the client signs nothing new until the same operation is retried', async () => {
-    link.start();
-    await until(() => link.connected);
+    await connectWatcher();
     // Simulate a watcher that stops acking (e.g. disk full): stop the link after login.
     const originalSend = WebSocket.prototype.send;
     let blocked = true;
@@ -271,8 +298,7 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
   });
 
   it('a voucher stored by the watcher whose ack was lost is committed after the watcher reconnects', async () => {
-    link.start();
-    await until(() => link.connected);
+    await connectWatcher();
     const originalSend = WebSocket.prototype.send;
     let blocked = true;
     WebSocket.prototype.send = function (this: WebSocket, data: string) {
@@ -316,10 +342,41 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
     expect(refused.response.status).toBe(402);
     expect(refused.payment).toMatchObject({ success: false, transaction: '' });
     expect(channels.get(AA)?.pending).toBeNull(); // released, not wedged
-    link.start();
-    await until(() => link.connected);
+    await connectWatcher();
     const ok = await call('y');
     expect(ok.response.status).toBe(200);
     expect(channels.get(AA)).toMatchObject({ committed: 100n, pending: null });
+  });
+});
+
+describe('a buyer can never spend more than the confirmed deposit', () => {
+  it('deposit 250, price 100: two calls are paid, the third is refused before anything is signed', async () => {
+    hub.aaVars.set(AA, { period: 1, balanceB: 250 });
+    await connectWatcher();
+    expect((await ask('one')).response.status).toBe(200);
+    expect((await ask('two')).response.status).toBe(200);
+    await expect(ask('three')).rejects.toMatchObject({ code: 'channel_exhausted' });
+    expect(channels.get(AA)).toMatchObject({ committed: 200n, pending: null });
+    expect(handlerCalls).toBe(2);
+  });
+
+  it('a client that bypasses its own check is refused by the facilitator (above the deposit)', async () => {
+    hub.aaVars.set(AA, { period: 1, balanceB: 250 });
+    await connectWatcher();
+    expect((await ask('one')).response.status).toBe(200);
+    expect((await ask('two')).response.status).toBe(200);
+    // a modified client signs a voucher for 300 although the deposit is 250
+    const header = await signDespiteBalance('three', 10_000);
+    const res = await fetch(`${base}/api/q`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'PAYMENT-SIGNATURE': header },
+      body: JSON.stringify({ q: 'three' }),
+    });
+    expect(res.status).toBe(402);
+    expect(decodePaymentResponseHeader(res.headers.get('PAYMENT-RESPONSE')!)).toMatchObject({
+      success: false,
+      errorReason: 'invalid_batch_settlement_obyte_cumulative_exceeds_balance',
+    });
+    expect(handlerCalls).toBe(2);
   });
 });

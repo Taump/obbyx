@@ -158,7 +158,7 @@ export class FacilitatorLink {
       log.error({ problem }, 'voucher rejected — NOT acked');
       return;
     }
-    await this.options.store.saveVoucher({
+    const saved = await this.options.store.saveVoucher({
       seq: msg.seq,
       network: msg.network,
       aa: msg.aa,
@@ -169,7 +169,17 @@ export class FacilitatorLink {
       packageJson: canonical(msg.signedPackage),
       channel: problem,
     });
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ack', seq: msg.seq }));
+    if (saved.kind === 'not_increasing') {
+      // Never pay for a request twice: not acked, so the facilitator never
+      // reports it paid. Means the same channel is used through another
+      // facilitator (or a facilitator bug) — needs the operator.
+      log.error(
+        { amountSpent: msg.amountSpent, best: saved.best.toString() },
+        'INVARIANT ALERT: voucher does not raise the cumulative amount — NOT acked',
+      );
+      return;
+    }
+    ack(ws, msg.seq); // only after the durable write (and again for a re-delivery)
     log.info({ amountSpent: msg.amountSpent }, 'voucher stored and acked');
   }
 
@@ -232,4 +242,9 @@ export class FacilitatorLink {
       }),
     );
   }
+}
+
+/** Tells the facilitator a voucher is durably stored (it then reports it paid). */
+function ack(ws: WebSocket, seq: number): void {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ack', seq }));
 }

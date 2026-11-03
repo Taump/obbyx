@@ -39,6 +39,13 @@ voucher's outcome is unknown, it never signs a new one: retry the same request
 3. Offer channels in your paywall: `new ObytePaywall({ …, batch: { minChannelTimeoutSeconds: 3600 } })`
    (demo: `BATCH_MIN_CHANNEL_TIMEOUT=3600`).
 
+Run **one watcher and one facilitator per seller address** for channel
+payments: the cumulative amount of a channel is tracked by that facilitator,
+and a buyer could otherwise reuse the same cumulative amount through a second
+facilitator. The watcher refuses (does not ack) any new voucher that does not
+raise the channel's cumulative amount and logs an `INVARIANT ALERT`, so such a
+reuse is never reported as paid.
+
 A payment succeeds only after **your watcher** has durably stored the voucher
 (synchronous ack). If the watcher is offline, channel payments are refused
 (fail-closed) and buyers fall back to `exact`.

@@ -336,3 +336,38 @@ describe('the watcher survives bad input', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('the watcher never acks a voucher that does not raise the cumulative amount', () => {
+  const commitment = (seq: number, amount: number, binding = 'f0'.repeat(32)) => {
+    const pkg = obyte.utils.signMessage(
+      { aa_address: AA, period: 1, amount_spent: amount, payment_amount: 100, binding },
+      { privateKey: clientKey, testnet: true },
+    ) as unknown as Record<string, unknown>;
+    return JSON.stringify({
+      type: 'commitment',
+      seq,
+      network: NET.caip2,
+      aa: AA,
+      period: 1,
+      amountSpent: String(amount),
+      paymentAmount: '100',
+      binding,
+      signedPackage: pkg,
+      state: 'pending',
+    });
+  };
+
+  it('same cumulative amount under a new seq (reuse through a second facilitator) is not acked', async () => {
+    const sent: string[] = [];
+    const ws = { send: (d: string) => sent.push(d), readyState: 1 };
+    const handle = (
+      link as unknown as { handle(ws: unknown, raw: string): Promise<void> }
+    ).handle.bind(link);
+    await handle(ws, commitment(1, 100));
+    await handle(ws, commitment(1, 100)); // re-delivery of the same entry: acked again
+    await handle(ws, commitment(7, 100, 'e1'.repeat(32))); // another operation, same cumulative: NOT acked
+    await handle(ws, commitment(8, 200, 'e2'.repeat(32))); // raises it: acked
+    expect(sent.map((d) => (JSON.parse(d) as { seq: number }).seq)).toEqual([1, 1, 8]);
+    expect((await store.best(AA, 1))?.amountSpent).toBe(200n);
+  });
+});

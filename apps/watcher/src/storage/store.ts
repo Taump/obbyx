@@ -57,6 +57,12 @@ export interface KnownChannel {
 
 export type ActionKind = 'close' | 'confirm' | 'fraud_proof';
 
+/** Outcome of storing a voucher: only `stored` and `duplicate` may be acked. */
+export type SaveResult =
+  | { readonly kind: 'stored' }
+  | { readonly kind: 'duplicate' }
+  | { readonly kind: 'not_increasing'; readonly best: bigint };
+
 /** Close states that make a channel "closing" for the facilitator. */
 const CLOSE_IN_PROGRESS = ['announced', 'sent'];
 
@@ -102,8 +108,8 @@ export class WatcherStore {
     binding: string;
     packageJson: string;
     channel: KnownChannel;
-  }): Promise<void> {
-    return this.prisma.$transaction(async (tx) => {
+  }): Promise<SaveResult> {
+    return this.prisma.$transaction(async (tx): Promise<SaveResult> => {
       const ts = this.now();
       await tx.channel.upsert({
         where: { aa: v.aa },
@@ -111,7 +117,15 @@ export class WatcherStore {
         update: {},
       });
       const existing = await tx.voucher.findUnique({ where: { seq: v.seq } });
-      if (existing !== null) return;
+      if (existing !== null) return { kind: 'duplicate' };
+      // A NEW journal entry must raise the channel's cumulative amount: the
+      // facilitator accepts the next voucher only after the previous one was
+      // acked. One that does not (e.g. the same cumulative amount reused
+      // through a second facilitator) would serve a request nobody pays for.
+      const top = highest(await tx.voucher.findMany({ where: { aa: v.aa, period: v.period } }));
+      if (top !== undefined && v.amountSpent <= BigInt(top.amountSpent)) {
+        return { kind: 'not_increasing', best: BigInt(top.amountSpent) };
+      }
       await tx.voucher.create({
         data: {
           seq: v.seq,
@@ -125,6 +139,7 @@ export class WatcherStore {
           receivedAt: ts,
         },
       });
+      return { kind: 'stored' };
     });
   }
 
@@ -147,11 +162,7 @@ export class WatcherStore {
   ): Promise<(StoredVoucher & { firstReceivedAt: number }) | undefined> {
     return this.prisma.$transaction(async (tx) => {
       const rows = await tx.voucher.findMany({ where: { aa, period } });
-      const top = rows.reduce<(typeof rows)[number] | undefined>(
-        (best, r) =>
-          best === undefined || BigInt(r.amountSpent) > BigInt(best.amountSpent) ? r : best,
-        undefined,
-      );
+      const top = highest(rows);
       if (top === undefined) return undefined;
       return {
         seq: top.seq,
@@ -232,4 +243,15 @@ export class WatcherStore {
   async close(): Promise<void> {
     await this.prisma.$disconnect();
   }
+}
+
+/**
+ * The voucher with the highest cumulative amount. Amounts are stored as
+ * decimal strings (BigInt), so they are compared numerically here, not by SQL.
+ */
+function highest<T extends { amountSpent: string }>(rows: readonly T[]): T | undefined {
+  return rows.reduce<T | undefined>(
+    (top, r) => (top === undefined || BigInt(r.amountSpent) > BigInt(top.amountSpent) ? r : top),
+    undefined,
+  );
 }

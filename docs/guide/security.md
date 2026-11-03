@@ -35,6 +35,9 @@ the proof; until then, channel payments mean trusting the facilitator.
 
 ## Seller duties (channels)
 
+Accept channel payments through **one facilitator and one watcher** per seller
+address (the channel's cumulative amount is tracked there).
+
 1. Keep the **watcher online**. When it is offline, channel payments are
    refused (buyers fall back to `exact`), but channels that buyers close
    meanwhile must be answered within the dispute window.
