@@ -71,6 +71,13 @@ export interface BatchStore {
   commitmentByHash(packageHash: string): Promise<CommitmentRow | undefined>;
   commitment(seq: number): Promise<CommitmentRow | undefined>;
   journal(payTo: string, cursor: number, limit?: number): Promise<CommitmentRow[]>;
+  /**
+   * Every still-pending entry of a seller, whatever its seq: on reconnect they
+   * are re-delivered even if the watcher's cursor is past them (stored but the
+   * ack was lost, or stored out of order) — otherwise they would stay pending
+   * forever and block their channels.
+   */
+  pending(payTo: string): Promise<CommitmentRow[]>;
   /** Atomically: check the channel is free and the cumulative rule, append a pending entry. */
   appendPending(input: AppendInput): Promise<AppendResult>;
   /**
@@ -179,6 +186,15 @@ export class SqliteBatchStore implements BatchStore {
   }
 
   /** Journal for one seller after `cursor` (both pending and committed). */
+  async pending(payTo: string): Promise<CommitmentRow[]> {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM batch_commitments WHERE pay_to = ? AND state = 'pending' ORDER BY seq",
+      )
+      .all(payTo) as unknown as CommitmentDbRow[];
+    return rows.map(toCommitment);
+  }
+
   async journal(payTo: string, cursor: number, limit = 500): Promise<CommitmentRow[]> {
     const rows = this.db
       .prepare('SELECT * FROM batch_commitments WHERE pay_to = ? AND seq > ? ORDER BY seq LIMIT ?')

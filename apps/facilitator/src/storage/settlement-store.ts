@@ -90,6 +90,12 @@ export class PrismaSettlementStore implements SettlementStore {
     });
   }
 
+  touch(key: string): Promise<void> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.exactSettlement.updateMany({ where: { key }, data: { updatedAt: this.now() } });
+    });
+  }
+
   listActive(limit = 100): Promise<SettlementRecord[]> {
     return this.prisma.$transaction(async (tx) =>
       (

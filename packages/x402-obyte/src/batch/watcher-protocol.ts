@@ -10,7 +10,7 @@ import { z } from 'zod';
  *   F → W  welcome     {seller}               then replays the journal after `cursor`
  *   F → W  commitment  {seq, ...voucher}      (pending or committed)
  *   W → F  ack         {seq}                  ONLY after the voucher is durably stored
- *   W → F  heartbeat   {cursor, bytesBalance}
+ *   W → F  heartbeat   {cursor, bytesBalance, closing?}   closing: channels the seller is closing (no new vouchers)
  *   F → W  error       {message}              then close
  *
  * The login is an Obyte signed message by the seller's address (payTo), so
@@ -48,12 +48,14 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
     login: z.record(z.string(), z.unknown()),
     cursor: z.number().int().nonnegative(),
     bytesBalance: z.string().regex(/^\d+$/),
+    closing: z.array(z.string()).max(10_000).optional(),
   }),
   z.object({ type: z.literal('ack'), seq: z.number().int().positive() }),
   z.object({
     type: z.literal('heartbeat'),
     cursor: z.number().int().nonnegative(),
     bytesBalance: z.string().regex(/^\d+$/),
+    closing: z.array(z.string()).max(10_000).optional(),
   }),
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;

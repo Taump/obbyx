@@ -1,8 +1,8 @@
 import type obyte from 'obyte';
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
-import { hubCall, parseStateVars } from '@obbyx/x402-obyte';
+import { KeyedQueue, hubCall, parseStateVars } from '@obbyx/x402-obyte';
 import { type ClosePolicy, channelState, decide } from './decide.js';
-import type { ActionKind, WatcherStore } from '../storage/store.js';
+import type { ActionKind, ActionRow, WatcherStore } from '../storage/store.js';
 
 /**
  * Defends the seller's channels: periodically reads each channel's AA state,
@@ -16,6 +16,11 @@ import type { ActionKind, WatcherStore } from '../storage/store.js';
  */
 export const TRIGGER_AMOUNT = 10_000;
 
+/** A seller close is sent this long after it was announced (> heartbeat + ack timeout). */
+export const DEFAULT_CLOSE_ANNOUNCE_SECONDS = 30;
+/** A trigger without visible effect is re-sent after this long. */
+export const DEFAULT_RESEND_AFTER_SECONDS = 600;
+
 export interface DefenderOptions {
   readonly client: obyte.Client;
   readonly store: WatcherStore;
@@ -25,6 +30,15 @@ export interface DefenderOptions {
   readonly policy: ClosePolicy;
   readonly hubTimeoutMs?: number;
   readonly resendAfterSeconds?: number;
+  /**
+   * A seller close is broadcast only this long after it was announced to the
+   * facilitator (default 30 s > heartbeat + ack timeout): vouchers accepted
+   * before the announcement are stored and acked first, and none is accepted
+   * after it, so the close carries the final best voucher.
+   */
+  readonly closeAnnounceSeconds?: number;
+  /** Tells the facilitator about channels being closed (the link's heartbeat). */
+  readonly announce?: () => Promise<void>;
   readonly now?: () => number;
 }
 
@@ -32,6 +46,12 @@ export class Defender {
   private readonly log: Logger;
   private readonly now: () => number;
   private running: Promise<void> | undefined;
+  /**
+   * A push and the poll pass never defend one channel at the same time: each
+   * run reads the stored actions again, so the second sees the trigger the
+   * first one sent and does not send it twice.
+   */
+  private readonly channels = new KeyedQueue();
 
   constructor(private readonly options: DefenderOptions) {
     this.log = moduleLogger(options.logger, 'watcher.defender');
@@ -49,7 +69,7 @@ export class Defender {
     const channel = await this.options.store.channel(aa);
     if (channel === undefined) return;
     try {
-      await this.defend(aa, channel.timeout);
+      await this.channels.run(aa, () => this.defend(aa, channel.timeout));
     } catch (err) {
       this.log.error({ err, aa }, 'defending a channel failed');
     }
@@ -58,7 +78,7 @@ export class Defender {
   private async pass(): Promise<void> {
     for (const channel of await this.options.store.channels()) {
       try {
-        await this.defend(channel.aa, channel.timeout);
+        await this.channels.run(channel.aa, () => this.defend(channel.aa, channel.timeout));
       } catch (err) {
         this.log.error({ err, aa: channel.aa }, 'defending a channel failed');
       }
@@ -78,6 +98,13 @@ export class Defender {
       return;
     }
     const state = channelState(stateVars);
+    // A finished close (the channel moved to a new period) no longer blocks vouchers.
+    if (
+      state.period !== undefined &&
+      (await this.options.store.finishCloses(aa, state.period)) > 0
+    ) {
+      await this.options.announce?.().catch(() => undefined);
+    }
     const best =
       state.period === undefined ? undefined : await this.options.store.best(aa, state.period);
     const decision = decide({ state, best, timeout, now: this.now(), policy: this.options.policy });
@@ -92,14 +119,7 @@ export class Defender {
     }
 
     const previous = await this.options.store.action(aa, decision.period, decision.action);
-    const resendAfter = this.options.resendAfterSeconds ?? 600;
-    if (previous?.status === 'sent' && this.now() - previous.updatedAt < resendAfter) {
-      log.debug(
-        { action: decision.action, unit: previous.unit },
-        'trigger already sent; waiting for it to take effect',
-      );
-      return;
-    }
+    if ((await this.readiness(aa, decision, previous, log)) !== 'send') return;
 
     const data: Record<string, unknown> =
       decision.action === 'confirm'
@@ -114,6 +134,45 @@ export class Defender {
           : { fraud_proof: 1, sentByPeer: JSON.parse(best?.packageJson ?? 'null') as unknown };
     log.info({ action: decision.action, why: decision.why }, 'sending channel trigger');
     await this.send(aa, decision.period, decision.action, data);
+  }
+
+  /**
+   * Whether a trigger may be sent now:
+   * - a seller close is first ANNOUNCED (the facilitator then refuses new
+   *   vouchers for the channel) and sent `closeAnnounceSeconds` later, so it
+   *   carries the final best voucher;
+   * - a trigger already sent is not repeated within `resendAfterSeconds`.
+   */
+  private async readiness(
+    aa: string,
+    decision: { action: ActionKind; period: number },
+    previous: ActionRow | undefined,
+    log: Logger,
+  ): Promise<'send' | 'wait'> {
+    const now = this.now();
+    if (decision.action === 'close' && (previous === undefined || previous.status === 'failed')) {
+      await this.options.store.recordAction({
+        aa,
+        period: decision.period,
+        kind: 'close',
+        unit: null,
+        status: 'announced',
+      });
+      await this.options.announce?.().catch((err: unknown) => log.warn({ err }, 'announce failed'));
+      log.info('close announced; it is sent after the vouchers already in flight');
+      return 'wait';
+    }
+    const announceFor = this.options.closeAnnounceSeconds ?? DEFAULT_CLOSE_ANNOUNCE_SECONDS;
+    if (previous?.status === 'announced' && now - previous.updatedAt < announceFor) return 'wait';
+    const resendAfter = this.options.resendAfterSeconds ?? DEFAULT_RESEND_AFTER_SECONDS;
+    if (previous?.status === 'sent' && now - previous.updatedAt < resendAfter) {
+      log.debug(
+        { action: decision.action, unit: previous.unit },
+        'trigger already sent; waiting for it to take effect',
+      );
+      return 'wait';
+    }
+    return 'send';
   }
 
   private async send(

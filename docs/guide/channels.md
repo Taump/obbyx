@@ -51,12 +51,12 @@ The watcher database holds your vouchers — they are your earnings.
 What the watcher does on-chain (triggers from your address, 10 000-byte bounce
 fee each):
 
-| Channel state                                                        | Action                              |
-| -------------------------------------------------------------------- | ----------------------------------- |
-| Client started a close and declared less than it signed              | `fraud_proof` with the best voucher |
-| Client started an honest close                                       | `confirm` immediately               |
-| You started the close                                                | `confirm` after the dispute window  |
-| Open, earned ≥ `CLOSE_AT_AMOUNT` or older than `CLOSE_AFTER_SECONDS` | `close` with the best voucher       |
+| Channel state                                                        | Action                                                                                                                       |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Client started a close and declared less than it signed              | `fraud_proof` with the best voucher                                                                                          |
+| Client started an honest close                                       | `confirm` after a 120 s grace (vouchers still in flight are stored first)                                                    |
+| You started the close                                                | `confirm` after the dispute window                                                                                           |
+| Open, earned ≥ `CLOSE_AT_AMOUNT` or older than `CLOSE_AFTER_SECONDS` | announce the close (the facilitator stops accepting vouchers for the channel), then `close` with the best voucher 30 s later |
 
 On every hub (re)connection it re-registers `light/new_aa_to_watch` /
 `light/new_address_to_watch` and its push subscription (obyte.js `onConnect`).

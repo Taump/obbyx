@@ -10,11 +10,13 @@ import type { CommitmentRow } from './store.js';
 export interface WatcherHealth {
   readonly ok: boolean;
   readonly reason?: string;
+  /** The seller announced it is closing this channel: refuse new vouchers for it. */
+  readonly closing?: boolean;
 }
 
 export interface WatcherGateway {
   /** Is a watcher for this seller connected, recent and funded for defensive triggers? */
-  health(payTo: string, network: string): WatcherHealth;
+  health(payTo: string, network: string, aa?: string): WatcherHealth;
   /** Pushes a commitment and waits for the durable ack (or times out). */
   deliver(commitment: CommitmentRow, timeoutMs: number): Promise<'acked' | 'timeout'>;
 }

@@ -40,6 +40,8 @@ interface Session {
   readonly network: string;
   lastSeen: number;
   bytesBalance: bigint;
+  /** Channels the seller is closing (announced by its watcher before it sends the close). */
+  closing: ReadonlySet<string>;
 }
 
 export class WsWatcherGateway implements WatcherGateway {
@@ -66,12 +68,15 @@ export class WsWatcherGateway implements WatcherGateway {
     });
   }
 
-  health(payTo: string, network: string): WatcherHealth {
+  health(payTo: string, network: string, aa?: string): WatcherHealth {
     const s = this.sessions.get(sessionKey(network, payTo));
     if (s === undefined || s.ws.readyState !== WebSocket.OPEN)
       return { ok: false, reason: "The seller's watcher is not connected" };
     if (this.now() - s.lastSeen > this.options.heartbeatTimeoutMs) {
       return { ok: false, reason: "The seller's watcher heartbeat is stale" };
+    }
+    if (aa !== undefined && s.closing.has(aa)) {
+      return { ok: false, closing: true, reason: 'The seller is closing this channel' };
     }
     if (s.bytesBalance < this.options.minBytes) {
       return {
@@ -147,6 +152,7 @@ export class WsWatcherGateway implements WatcherGateway {
             network: msg.network,
             lastSeen: this.now(),
             bytesBalance: BigInt(msg.bytesBalance),
+            closing: closingOf(msg),
           };
           const key = sessionKey(msg.network, login.value);
           this.sessions.get(key)?.ws.close(4000, 'replaced by a new watcher session');
@@ -164,6 +170,7 @@ export class WsWatcherGateway implements WatcherGateway {
         session.lastSeen = this.now();
         if (msg.type === 'heartbeat') {
           session.bytesBalance = BigInt(msg.bytesBalance);
+          session.closing = closingOf(msg);
           return;
         }
         // ack: durable on the watcher → committed here (idempotent).
@@ -208,6 +215,11 @@ export class WsWatcherGateway implements WatcherGateway {
   }
 
   private async replay(session: Session, cursor: number): Promise<void> {
+    // Pending entries at or below the cursor: stored by the watcher but never
+    // acked (lost ack, out-of-order store). The watcher acks a duplicate.
+    for (const c of await this.options.store.pending(session.seller)) {
+      if (c.seq <= cursor && c.network === session.network) this.send(session.ws, toMessage(c));
+    }
     let after = cursor;
     for (;;) {
       const batch = await this.options.store.journal(session.seller, after, 200);
@@ -252,4 +264,9 @@ function toMessage(c: CommitmentRow): ServerMessage {
     signedPackage: JSON.parse(c.packageJson) as Record<string, unknown>,
     state: c.state,
   };
+}
+
+/** Channels the seller's watcher reports as closing (no new vouchers for them). */
+function closingOf(msg: { closing?: string[] | undefined }): ReadonlySet<string> {
+  return new Set(msg.closing ?? []);
 }

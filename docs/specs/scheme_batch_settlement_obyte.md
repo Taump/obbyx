@@ -152,14 +152,20 @@ are refused once a close is initiated. Offers expire at `extra.validUntil`.
 
 ## 6. Redemption (seller watcher)
 
-| Channel state                                        | Watcher action                      |
-| ---------------------------------------------------- | ----------------------------------- |
-| client started a close declaring less than it signed | `fraud_proof` with the best voucher |
-| client started an honest close                       | `confirm`                           |
-| seller started the close                             | `confirm` after the dispute window  |
-| enough earned or old enough (policy)                 | `close` with the best voucher       |
+| Channel state                                        | Watcher action                                           |
+| ---------------------------------------------------- | -------------------------------------------------------- |
+| client started a close declaring less than it signed | `fraud_proof` with the best voucher                      |
+| client started an honest close                       | `confirm` after a short grace (vouchers in flight first) |
+| seller started the close                             | `confirm` after the dispute window                       |
+| enough earned or old enough (policy)                 | announce, then `close` with the best voucher             |
 
-The facilitator never sends AA triggers.
+Before a seller close, the watcher **announces** it (`closing` in its
+heartbeat); from then on the facilitator refuses new vouchers for the channel
+(`…_channel_closing`), and the close is sent after vouchers accepted earlier
+were stored — so it carries the final best voucher. On reconnect the
+facilitator re-delivers every still-pending voucher of the seller, including
+ones below the watcher's cursor (stored but never acked). The facilitator
+never sends AA triggers.
 
 ## 7. Trust model
 

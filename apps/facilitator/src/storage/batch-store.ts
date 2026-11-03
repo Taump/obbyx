@@ -67,6 +67,19 @@ export class PrismaBatchStore implements BatchStore {
     );
   }
 
+  pending(payTo: string): Promise<CommitmentRow[]> {
+    return this.prisma.$transaction(async (tx) =>
+      this.open(
+        tx,
+        await tx.batchCommitment.findMany({
+          where: { payTo, state: 'pending' },
+          orderBy: { seq: 'asc' },
+        }),
+        'pending_replay',
+      ),
+    );
+  }
+
   journal(payTo: string, cursor: number, limit = 500): Promise<CommitmentRow[]> {
     return this.prisma.$transaction(async (tx) =>
       this.open(

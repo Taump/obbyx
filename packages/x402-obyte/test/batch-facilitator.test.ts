@@ -23,9 +23,12 @@ const AA = channelAddress(params);
 
 class FakeGateway implements WatcherGateway {
   healthy = true;
+  closing = new Set<string>();
   ack: 'acked' | 'timeout' = 'acked';
   delivered: CommitmentRow[] = [];
-  health() {
+  health(_payTo: string, _network: string, aa?: string) {
+    if (aa !== undefined && this.closing.has(aa))
+      return { ok: false, closing: true, reason: 'closing' };
     return this.healthy ? { ok: true } : { ok: false, reason: 'watcher offline' };
   }
   async deliver(c: CommitmentRow) {
@@ -336,6 +339,17 @@ describe('a stored (pending) voucher is never reported as a definite failure', (
     ).toMatchObject({
       success: false,
       errorReason: 'invalid_batch_settlement_obyte_quote_expired',
+    });
+  });
+});
+
+describe('a channel the seller is closing', () => {
+  it('refuses new vouchers definitively (channel_closing), not as watcher_unavailable', async () => {
+    gateway.closing.add(AA);
+    expect(await facilitator().settle(payload(voucher(100)), requirements())).toMatchObject({
+      success: false,
+      errorReason: 'invalid_batch_settlement_obyte_channel_closing',
+      transaction: '',
     });
   });
 });

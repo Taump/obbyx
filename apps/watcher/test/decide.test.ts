@@ -40,6 +40,20 @@ describe('watcher decisions', () => {
     });
   });
 
+  it('waits a grace period before confirming an honest client close (in-flight vouchers)', () => {
+    const closing = { ...open, closeInitiatedBy: 'B' as const, closeStartTs: 1000, spentByB: 500n };
+    expect(run(closing, best(500n), 1100)).toMatchObject({ action: 'none' });
+    expect(run(closing, best(500n), 1120)).toMatchObject({ action: 'confirm', period: 3 });
+    // …but a voucher above the declared amount is answered at once
+    expect(run(closing, best(600n), 1001)).toMatchObject({ action: 'fraud_proof' });
+    // the grace never exceeds half the dispute window
+    expect(
+      decide({ state: closing, best: best(500n), timeout: 100, now: 1050, policy }),
+    ).toMatchObject({
+      action: 'confirm',
+    });
+  });
+
   it('confirms our own close only after the dispute window', () => {
     const closing = { ...open, closeInitiatedBy: 'A' as const, closeStartTs: 1000 };
     expect(run(closing, best(500n), 1599)).toMatchObject({ action: 'none' });

@@ -57,12 +57,20 @@ export interface KnownChannel {
 
 export type ActionKind = 'close' | 'confirm' | 'fraud_proof';
 
+/** Close states that make a channel "closing" for the facilitator. */
+const CLOSE_IN_PROGRESS = ['announced', 'sent'];
+
 export interface ActionRow {
   readonly aa: string;
   readonly period: number;
   readonly kind: ActionKind;
   readonly unit: string | null;
-  readonly status: 'sent' | 'failed';
+  /**
+   * announced: a close is decided and the facilitator told to accept no new
+   * vouchers for the channel; sent: the trigger was broadcast; done: the
+   * channel moved to a later period; failed: the trigger could not be sent.
+   */
+  readonly status: 'announced' | 'sent' | 'done' | 'failed';
   readonly updatedAt: number;
 }
 
@@ -189,6 +197,36 @@ export class WatcherStore {
         update: { unit: a.unit, status: a.status, error: a.error ?? null, updatedAt: ts },
       });
     });
+  }
+
+  /** Channels with a seller close announced or in flight (reported to the facilitator). */
+  closingChannels(): Promise<string[]> {
+    return this.prisma.$transaction(async (tx) =>
+      (
+        await tx.action.findMany({
+          where: { kind: 'close', status: { in: CLOSE_IN_PROGRESS } },
+          select: { aa: true },
+        })
+      ).map((r) => r.aa),
+    );
+  }
+
+  /** Marks the closes of earlier periods done: the channel accepts vouchers again. */
+  finishCloses(aa: string, currentPeriod: number): Promise<number> {
+    return this.prisma.$transaction(
+      async (tx) =>
+        (
+          await tx.action.updateMany({
+            where: {
+              aa,
+              kind: 'close',
+              period: { lt: currentPeriod },
+              status: { in: CLOSE_IN_PROGRESS },
+            },
+            data: { status: 'done', updatedAt: this.now() },
+          })
+        ).count,
+    );
   }
 
   async close(): Promise<void> {

@@ -44,6 +44,9 @@ import { type SettlementRecord, type SettlementStore, TERMINAL_STATES } from './
  * {@link hubCall} for timeouts and unknown-outcome classification (I7).
  */
 export type FinalityPolicy = 'stable' | 'accepted';
+
+/** How long a unit we posted is still looked for after the publication window (s). */
+const POSTED_UNIT_GRACE_SECONDS = 86_400;
 export { EXACT_SETTLE_REASONS } from './reasons.js';
 export { HISTORY_PROBE_ADDRESS, isTransientPostError } from './finality.js';
 
@@ -145,6 +148,17 @@ export class ExactObyteFacilitator implements SchemeNetworkFacilitator {
             { proofId: unitHash, reason: checked.reason },
             'settle rejected at verification',
           );
+          // The hub did not answer: outcome unknown, nothing claimed yet. Pending
+          // (non-empty transaction) so callers keep the payment and retry.
+          if (checked.reason === EXACT_SETTLE_REASONS.ledger) {
+            return {
+              success: false,
+              errorReason: 'settlement_pending',
+              errorMessage: checked.message,
+              transaction: unitHash,
+              network,
+            };
+          }
           return failure(network, checked.reason, checked.message);
         }
         const { facts, req } = checked.value;
@@ -303,91 +317,122 @@ export class ExactObyteFacilitator implements SchemeNetworkFacilitator {
     return promise;
   }
 
+  /**
+   * One pass of the state machine: publish (or find) the unit, then follow it
+   * to finality. Every hop is a compare-and-set; anything unknown leaves the
+   * record where it is, to be resumed by a retry or the recovery worker.
+   */
   private async step(initial: SettlementRecord): Promise<SettleResponse> {
-    const store = this.options.store;
     const client = this.options.clients.get(initial.network);
-    let record = (await store.get(initial.key)) ?? initial;
+    let record = (await this.options.store.get(initial.key)) ?? initial;
     if (client === undefined) return this.respond(record, 'Network is not served');
-    const t = this.hubTimeoutMs;
-
+    let problem: string | undefined;
     if (record.state === 'claimed' || record.state === 'broadcasting') {
-      // Is it already on the ledger (we or someone else published it)?
-      const known = await hubCall(() => client.api.getJoint(record.unitHash), t);
-      if (known.kind === 'ok' && known.value.joint !== undefined) {
-        record = await this.move(record, 'accepted', { data: { via: 'get_joint' } });
-      } else if (known.kind !== 'ok') {
-        await store.event({
-          key: record.key,
-          kind: 'hub_unavailable',
-          data: { op: 'get_joint', error: known.error },
-        });
-        return this.respond(record);
-      } else if (this.now() > record.publishDeadline) {
-        record = await this.move(record, 'expired', { lastError: 'publication window closed' });
-        return this.respond(record);
-      } else {
-        if (record.state === 'claimed') record = await this.move(record, 'broadcasting');
-        if (record.unitJson === null) return this.respond(record, 'Unit body is no longer stored');
-        const unit = JSON.parse(record.unitJson) as obyte.Unit;
-        const posted = await hubCall(() => client.api.postJoint({ unit } as never), t);
-        await store.event({ key: record.key, kind: 'post_joint', data: { outcome: posted.kind } });
-        if (posted.kind === 'ok') {
-          record = await this.move(record, 'accepted', {
-            incrementAttempts: true,
-            data: { response: posted.value },
-          });
-        } else if (posted.kind === 'hub_error' && isTransientPostError(posted.error)) {
-          // The hub is still working on it or lacks context: not a rejection.
-          // Stay in broadcasting; the next attempt resolves it via get_joint.
-          this.log.info(
-            { proofId: record.unitHash, hubError: posted.error },
-            'broadcast not final yet (transient hub answer)',
-          );
-          return this.respond(record);
-        } else if (posted.kind === 'hub_error') {
-          // Definite rejection — unless the unit is known after all (e.g. posted earlier).
-          const recheck = await hubCall(() => client.api.getJoint(record.unitHash), t);
-          if (recheck.kind === 'ok' && recheck.value.joint !== undefined) {
-            record = await this.move(record, 'accepted', {
-              data: { via: 'get_joint after hub error' },
-            });
-          } else if (recheck.kind === 'ok') {
-            record = await this.move(record, 'rejected', {
-              lastError: posted.error,
-              incrementAttempts: true,
-            });
-            this.log.warn(
-              { proofId: record.unitHash, hubError: posted.error },
-              'unit rejected by the network',
-            );
-            return this.respond(record);
-          } else {
-            return this.respond(record);
-          }
-        } else {
-          // Unknown outcome: stay in broadcasting; the next attempt resolves it via get_joint.
-          this.log.warn(
-            { proofId: record.unitHash, error: posted.error },
-            'broadcast outcome unknown',
-          );
-          return this.respond(record);
-        }
-      }
+      ({ record, problem } = await this.publish(client, record));
     }
+    if (record.state === 'accepted') record = await this.awaitFinality(client, record);
+    return this.respond(record, problem);
+  }
 
-    if (record.state === 'accepted') {
-      const finality = await finalityOf(
-        { hubTimeoutMs: this.hubTimeoutMs, historyProbeAddress: this.options.historyProbeAddress },
-        client,
-        record.unitHash,
-      );
-      if (finality === 'good') record = await this.move(record, 'stable_good');
-      else if (finality === 'final_bad') {
-        record = await this.move(record, 'final_bad', { lastError: 'double spend (final-bad)' });
-        this.log.error({ proofId: record.unitHash }, 'settled unit became final-bad');
-      }
+  /** Before acceptance: find the unit on the ledger, otherwise post it while the window is open. */
+  private async publish(
+    client: obyte.Client,
+    record: SettlementRecord,
+  ): Promise<{ record: SettlementRecord; problem?: string }> {
+    // Is it already on the ledger (we or someone else published it)?
+    const known = await hubCall(() => client.api.getJoint(record.unitHash), this.hubTimeoutMs);
+    if (known.kind !== 'ok') {
+      await this.options.store.event({
+        key: record.key,
+        kind: 'hub_unavailable',
+        data: { op: 'get_joint', error: known.error },
+      });
+      return { record };
     }
-    return this.respond(record);
+    if (known.value.joint !== undefined) {
+      return { record: await this.move(record, 'accepted', { data: { via: 'get_joint' } }) };
+    }
+    if (this.now() > record.publishDeadline)
+      return { record: await this.afterPublishWindow(record) };
+    if (record.unitJson === null) return { record, problem: 'Unit body is no longer stored' };
+    return { record: await this.broadcast(client, record, record.unitJson) };
+  }
+
+  /**
+   * Past the publication window we never post. A unit we never posted expires.
+   * One we posted (outcome unknown or "not yet") may still land, so it is
+   * looked for during a grace period before it expires.
+   */
+  private async afterPublishWindow(record: SettlementRecord): Promise<SettlementRecord> {
+    if (record.attempts === 0) {
+      return this.move(record, 'expired', { lastError: 'publication window closed' });
+    }
+    if (this.now() > record.publishDeadline + POSTED_UNIT_GRACE_SECONDS) {
+      return this.move(record, 'expired', { lastError: 'posted, but never seen on the ledger' });
+    }
+    await this.options.store.touch(record.key);
+    return record;
+  }
+
+  /** Posts the unit once and classifies the hub's answer. */
+  private async broadcast(
+    client: obyte.Client,
+    initial: SettlementRecord,
+    unitJson: string,
+  ): Promise<SettlementRecord> {
+    // Count the attempt BEFORE posting: a crash mid-post still counts as "maybe sent".
+    const record = await this.move(initial, 'broadcasting', { incrementAttempts: true });
+    const unit = JSON.parse(unitJson) as obyte.Unit;
+    const posted = await hubCall(() => client.api.postJoint({ unit } as never), this.hubTimeoutMs);
+    await this.options.store.event({
+      key: record.key,
+      kind: 'post_joint',
+      data: { outcome: posted.kind },
+    });
+    const proofId = record.unitHash;
+
+    if (posted.kind === 'ok') {
+      return this.move(record, 'accepted', { data: { response: posted.value } });
+    }
+    if (posted.kind === 'unknown') {
+      this.log.warn({ proofId, error: posted.error }, 'broadcast outcome unknown');
+      return record; // resolved via get_joint on the next attempt
+    }
+    if (isTransientPostError(posted.error)) {
+      // The hub is still working on it or lacks context: not a rejection.
+      this.log.info(
+        { proofId, hubError: posted.error },
+        'broadcast not final yet (transient hub answer)',
+      );
+      return record;
+    }
+    // Definite rejection — unless the unit is known after all (e.g. posted earlier).
+    const recheck = await hubCall(() => client.api.getJoint(proofId), this.hubTimeoutMs);
+    if (recheck.kind !== 'ok') return record;
+    if (recheck.value.joint !== undefined) {
+      return this.move(record, 'accepted', { data: { via: 'get_joint after hub error' } });
+    }
+    this.log.warn({ proofId, hubError: posted.error }, 'unit rejected by the network');
+    return this.move(record, 'rejected', { lastError: posted.error });
+  }
+
+  /** After acceptance: stable and good, final-bad, or still waiting (rotated for recovery). */
+  private async awaitFinality(
+    client: obyte.Client,
+    record: SettlementRecord,
+  ): Promise<SettlementRecord> {
+    const finality = await finalityOf(
+      { hubTimeoutMs: this.hubTimeoutMs, historyProbeAddress: this.options.historyProbeAddress },
+      client,
+      record.unitHash,
+    );
+    if (finality === 'good') return this.move(record, 'stable_good');
+    if (finality === 'final_bad') {
+      this.log.error({ proofId: record.unitHash }, 'settled unit became final-bad');
+      return this.move(record, 'final_bad', { lastError: 'double spend (final-bad)' });
+    }
+    await this.options.store.touch(record.key);
+    return record;
   }
 
   private async move(

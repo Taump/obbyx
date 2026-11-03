@@ -100,6 +100,8 @@ async function main(): Promise<void> {
     testnet: network.testnet,
     policy: { closeAtAmount: env.CLOSE_AT_AMOUNT, closeAfterSeconds: env.CLOSE_AFTER_SECONDS },
     hubTimeoutMs: env.HUB_TIMEOUT_MS,
+    // `link` is created below; announce runs only later, from a defence pass.
+    announce: () => link.announce(),
   });
 
   const bootstrap = createBootstrap({

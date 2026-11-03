@@ -85,6 +85,8 @@ export interface SettlementStore {
   ): Promise<SettlementRecord | undefined>;
   event(event: SettlementEvent): Promise<void>;
   listActive(limit?: number): Promise<SettlementRecord[]>;
+  /** Marks a non-terminal record as just looked at (fair rotation in the recovery worker). */
+  touch(key: string): Promise<void>;
   events(
     key: string,
   ): Promise<{ kind: string; from: string | null; to: string | null; data: unknown }[]>;
@@ -288,6 +290,12 @@ export class SqliteSettlementStore implements SettlementStore {
   }
 
   /** Non-terminal settlements, oldest first — resumed by the recovery worker. */
+  async touch(key: string): Promise<void> {
+    this.db
+      .prepare('UPDATE exact_settlements SET updated_at = ? WHERE key = ?')
+      .run(this.now(), key);
+  }
+
   async listActive(limit = 100): Promise<SettlementRecord[]> {
     const rows = this.db
       .prepare(

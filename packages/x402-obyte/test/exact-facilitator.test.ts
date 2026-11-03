@@ -13,6 +13,7 @@ import {
 } from '../src/exact/facilitator.js';
 import { SqliteSettlementStore, StoreLockedError } from '../src/exact/store.js';
 import { HASH_A, HASH_C, addressOf, composeTestUnit, testKey } from '../../obyte/test/helpers.js';
+import { failOnce } from './fail-once.js';
 import { FakeHub } from './fake-hub.js';
 
 const NOW = 1_790_000_010; // composeTestUnit uses timestamp 1_790_000_000
@@ -235,7 +236,9 @@ describe('settle — state machine', () => {
     now += 301;
     hub.post = 'accept';
     const res = await f.settle(payloadFor(unit), requirements);
-    expect(res).toMatchObject({ success: false, errorReason: S.expired });
+    // It was posted once (outcome unknown): pending, never re-posted after the window.
+    expect(res).toMatchObject({ success: false, errorReason: 'settlement_pending' });
+    expect(hub.calls['postJoint']).toBe(1);
     expect(hub.joints.has(String(unit['unit']))).toBe(false);
   });
 
@@ -377,5 +380,60 @@ describe('payTo must not be an autonomous agent', () => {
     const calls = hub.calls['getDefinition'] ?? 0;
     expect(await f.verify(payloadFor(unit), requirements)).toMatchObject({ isValid: true });
     expect(hub.calls['getDefinition'] ?? 0).toBe(calls);
+  });
+});
+
+describe('a unit we posted is never expired while it may still land', () => {
+  it('transient post, window passes, the hub accepts it later → settled, not expired', async () => {
+    const f = facilitator({ finality: 'accepted' });
+    hub.post = 'reject';
+    hub.rejectError = 'unknown parents XYZ';
+    expect(await f.settle(payloadFor(unit), requirements)).toMatchObject({
+      errorReason: 'settlement_pending',
+    });
+    now += 301; // past PUBLISH_WINDOW_SECONDS
+    const later = await f.settle(payloadFor(unit), requirements);
+    expect(later).toMatchObject({ errorReason: 'settlement_pending' }); // NOT expired
+    expect(hub.calls['postJoint']).toBe(1); // never re-posted after the window
+    hub.joints.set(String((unit as { unit: string }).unit), unit as never); // the hub caught up
+    expect(await f.settle(payloadFor(unit), requirements)).toMatchObject({ success: true });
+  });
+
+  it('a unit never posted expires at the window; a posted one only after the grace period', async () => {
+    const f = facilitator({ finality: 'accepted' });
+    hub.post = 'hang';
+    await f.settle(payloadFor(unit), requirements); // posted, outcome unknown
+    now += 301 + 86_400 + 1;
+    hub.post = 'accept';
+    expect(await f.settle(payloadFor(unit), requirements)).toMatchObject({
+      errorReason: S.expired,
+    });
+  });
+});
+
+describe('a claimed unit that was never posted (crash before the post)', () => {
+  it('expires at the publication window', async () => {
+    // the process dies right before posting (the move to broadcasting fails)
+    store = failOnce(store, 'transition', (args) => args[2] === 'broadcasting');
+    const f = facilitator({ finality: 'accepted' });
+    await f.settle(payloadFor(unit), requirements).catch(() => undefined);
+    expect(hub.calls['postJoint']).toBeUndefined();
+    now += 301;
+    expect(await f.settle(payloadFor(unit), requirements)).toMatchObject({
+      errorReason: S.expired,
+    });
+    expect(hub.calls['postJoint']).toBeUndefined();
+  });
+});
+
+describe('recovery rotation', () => {
+  it('every poll of a record that is still waiting moves it to the back of the recovery queue', async () => {
+    const f = facilitator({ finality: 'stable' });
+    await f.settle(payloadFor(unit), requirements); // accepted, waiting for stability
+    const [first] = await store.listActive();
+    expect(first?.state).toBe('accepted');
+    now += 100;
+    await f.resume(first!);
+    expect((await store.listActive())[0]?.updatedAt).toBe(now);
   });
 });

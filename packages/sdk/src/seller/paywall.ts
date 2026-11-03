@@ -43,6 +43,11 @@ import {
   operationFingerprint,
 } from './quote.js';
 import type { ConsumedProofsStore, StoredResponse } from './consumed-proofs.js';
+import {
+  DEFAULT_MAX_TIMEOUT_SECONDS,
+  DEFAULT_QUOTE_TTL_SECONDS,
+  DEFAULT_SERVING_LEASE_SECONDS,
+} from './defaults.js';
 
 /**
  * Express paywall for x402 `exact` payments on Obyte (seller side).
@@ -221,12 +226,13 @@ export class ObytePaywall {
       // A proof left in `serving` by a crashed process is recovered after the lease.
       if (
         record.state === 'serving' &&
-        store.reclaimStale(key, this.options.servingLeaseSeconds ?? 300)
+        store.reclaimStale(key, this.options.servingLeaseSeconds ?? DEFAULT_SERVING_LEASE_SECONDS)
       ) {
         this.log.warn('recovered a payment stuck in serving (lease expired)');
         record = store.get(key) ?? record;
       }
       if (!bindingsEqual(record.binding, binding)) {
+        res.setHeader('PAYMENT-RESPONSE', this.refusal('invalid_payment_reused'));
         res.status(402).json({ error: 'invalid_payment_reused' });
         return;
       }
@@ -283,8 +289,12 @@ export class ObytePaywall {
       const settled = await this.settleWithWait(payload, accepted);
       const paymentResponse = encodePaymentResponseHeader(settled);
       if (settled.success) {
-        store.transition(key, 'settling', 'paid_not_served', { paymentResponse });
         this.log.info({ transaction: settled.transaction }, 'payment settled');
+        if (store.markSettled(key, binding, paymentResponse) === 'served') {
+          // A concurrent request with the same payment already served it.
+          const served = store.get(key);
+          return this.send(res, served?.response ?? null, served?.paymentResponse ?? null);
+        }
         return this.serve(req, res, key, paymentResponse, handler);
       }
       if (settled.errorReason === 'settlement_pending') {
@@ -299,7 +309,9 @@ export class ObytePaywall {
       }
       if (settled.transaction === '') {
         // Rejected before reaching the network: the proof was not consumed.
-        store.forget(key, 'settling');
+        // Only the request that created the row removes it: a concurrent
+        // request with the same payment may be settling it right now.
+        if (created) store.forget(key, 'settling');
       } else {
         store.transition(key, 'settling', 'failed', { paymentResponse });
       }
@@ -447,7 +459,14 @@ export class ObytePaywall {
     price: { asset: string; amount: string },
     error?: string,
   ): void {
-    const quote = newQuote(this.now(), this.options.quoteTtlSeconds ?? 300);
+    // A refused payment that was never settled: say so explicitly (success:
+    // false, empty transaction) so the client knows it was NOT used and can
+    // release its budget and its channel voucher. A settle failure already
+    // set its own PAYMENT-RESPONSE.
+    if (error !== undefined && !res.hasHeader('PAYMENT-RESPONSE')) {
+      res.setHeader('PAYMENT-RESPONSE', this.refusal(error));
+    }
+    const quote = newQuote(this.now(), this.options.quoteTtlSeconds ?? DEFAULT_QUOTE_TTL_SECONDS);
     const facts = this.requestFacts(req, route);
     const terms = this.terms(price);
     const accepts: PaymentRequirements[] = this.schemesFor(route).map((scheme) => ({
@@ -456,7 +475,7 @@ export class ObytePaywall {
       asset: price.asset,
       amount: price.amount,
       payTo: this.options.payTo,
-      maxTimeoutSeconds: this.options.maxTimeoutSeconds ?? 300,
+      maxTimeoutSeconds: this.options.maxTimeoutSeconds ?? DEFAULT_MAX_TIMEOUT_SECONDS,
       extra: {
         binding: offerBinding(this.options, scheme, quote, facts, terms),
         ...quote,
@@ -491,6 +510,16 @@ export class ObytePaywall {
     };
     res.setHeader('PAYMENT-REQUIRED', encodePaymentRequiredHeader(body));
     res.status(402).json(body);
+  }
+
+  /** PAYMENT-RESPONSE of a payment refused before settlement (not used, nothing charged). */
+  private refusal(errorReason: string): string {
+    return encodePaymentResponseHeader({
+      success: false,
+      errorReason,
+      transaction: '',
+      network: this.options.network as PaymentRequirements['network'],
+    });
   }
 
   private requestFacts(req: Request, route: PaidRouteOptions): RequestFacts {

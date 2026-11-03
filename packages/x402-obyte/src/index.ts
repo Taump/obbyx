@@ -108,3 +108,4 @@ export {
   parseLedgerUnit,
   parseStateVars,
 } from './hub/schemas.js';
+export { KeyedQueue } from './util/keyed-queue.js';

@@ -19,6 +19,7 @@ import {
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
 import { EXACT_SCHEME, bindingsEqual, exactExtraSchema } from '@obbyx/x402-obyte';
 import type { ConsumedProofsStore } from './consumed-proofs.js';
+import { DEFAULT_QUOTE_TTL_SECONDS, DEFAULT_SERVING_LEASE_SECONDS } from './defaults.js';
 import { type Quote, bodyHashOf, newQuote, offerBinding } from './quote.js';
 
 /**
@@ -38,6 +39,8 @@ import { type Quote, bodyHashOf, newQuote, offerBinding } from './quote.js';
  *   of the stored response (the official middleware cannot replay responses).
  */
 export interface ObyteExactServerOptions {
+  /** How long a request may hold a payment in `serving` before a retry takes over (default 300 s). */
+  readonly servingLeaseSeconds?: number;
   readonly sellerId: string;
   /** HMAC key for bindings (≥ 32 bytes). */
   readonly secret: string | Uint8Array;
@@ -109,7 +112,16 @@ export class ObyteExactServer implements SchemeNetworkServer {
       onBeforeSettle: async (ctx) => {
         const key = this.keyOf(ctx);
         if (key === undefined) return { abort: true, reason: 'invalid_payload' };
-        if (this.options.proofs.transition(key, 'settling', 'serving')) return undefined;
+        const proofs = this.options.proofs;
+        // A claim left behind by a crashed process is taken over after the lease.
+        proofs.reclaimStale(key, this.options.servingLeaseSeconds ?? DEFAULT_SERVING_LEASE_SECONDS);
+        if (
+          proofs.transition(key, 'settling', 'serving') ||
+          // settled earlier, but the handler failed: serve it now (settle is idempotent)
+          proofs.transition(key, 'paid_not_served', 'serving')
+        ) {
+          return undefined;
+        }
         const state = this.options.proofs.get(key)?.state;
         this.log.warn({ state }, 'payment already in use by another request; refused');
         return {
@@ -124,6 +136,21 @@ export class ObyteExactServer implements SchemeNetworkServer {
         // release the claim so the SAME payment can be retried.
         if (ctx.result.success) this.options.proofs.transition(key, 'serving', 'served');
         else this.options.proofs.transition(key, 'serving', 'settling');
+      },
+      // The handler failed or threw after the payment was settled (upfront):
+      // the payment stays usable for the SAME operation instead of "already used".
+      onVerifiedPaymentCanceled: async (ctx) => {
+        const key = this.keyOf(ctx);
+        if (key === undefined) return;
+        if (ctx.settledPhases.includes('before-handler')) {
+          this.options.proofs.transition(key, 'served', 'paid_not_served');
+        } else {
+          this.options.proofs.transition(key, 'serving', 'settling');
+        }
+        this.log.warn(
+          { reason: ctx.reason },
+          'paid request not served; the same payment can retry',
+        );
       },
       onSettleFailure: async (ctx) => {
         const key = this.keyOf(ctx);
@@ -179,7 +206,7 @@ export class ObyteExactServer implements SchemeNetworkServer {
           ? accepted
           : undefined;
       if (quote !== undefined) return { ...req, extra: { ...req.extra, ...quote } };
-      const fresh = newQuote(this.now(), this.options.quoteTtlSeconds ?? 300);
+      const fresh = newQuote(this.now(), this.options.quoteTtlSeconds ?? DEFAULT_QUOTE_TTL_SECONDS);
       return {
         ...req,
         extra: { ...req.extra, binding: this.bindingFor(req, request, fresh), ...fresh },

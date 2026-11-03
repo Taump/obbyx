@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { decidePaymentId } from '../src/seller/payment-identifier.js';
+import { ObyteExactServer } from '../src/seller/x402-server.js';
+import { Writable } from 'node:stream';
+import { createLogger } from '@obbyx/obyte/logger';
+
+const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
 
 describe('ConsumedProofsStore', () => {
   it('one proof, one operation: transitions are compare-and-set', () => {
@@ -59,5 +64,52 @@ describe('payment-identifier decisions', () => {
     expect(decidePaymentId(s, { ...base, paymentId: undefined })).toMatchObject({
       error: 'payment_identifier_required',
     });
+  });
+});
+
+describe('ObyteExactServer crash recovery', () => {
+  it('a payment left in serving by a crashed process is taken over after the lease', async () => {
+    let now = 1000;
+    const proofs = new ConsumedProofsStore(':memory:', () => now);
+    const server = new ObyteExactServer({
+      sellerId: 's',
+      secret: 'x'.repeat(32),
+      proofs,
+      logger: silent,
+      now: () => now,
+    });
+    const unit = 'U'.repeat(43) + '=';
+    const ctx = {
+      paymentPayload: { payload: { unit: { unit } } },
+      requirements: { network: 'obyte:testnet' },
+    };
+    const key = `obyte:testnet:unit:${unit}`;
+    proofs.begin(key, 'b');
+    const hooks = server.schemeHooks as { onBeforeSettle: (c: unknown) => Promise<unknown> };
+    expect(await hooks.onBeforeSettle(ctx)).toBeUndefined(); // claimed: settling → serving
+    // the process dies here; a retry within the lease is refused …
+    expect(await hooks.onBeforeSettle(ctx)).toMatchObject({
+      abort: true,
+      reason: 'payment_in_progress',
+    });
+    now += 301;
+    // … and taken over after it
+    expect(await hooks.onBeforeSettle(ctx)).toBeUndefined();
+  });
+});
+
+describe('markSettled', () => {
+  it('records a settled payment as paid, also when its row was removed meanwhile; never downgrades served', () => {
+    const s = new ConsumedProofsStore(':memory:');
+    s.begin('a', 'b');
+    expect(s.markSettled('a', 'b', 'P')).toBe('paid_not_served');
+    expect(s.markSettled('gone', 'b', 'P')).toBe('paid_not_served'); // row deleted by a concurrent refusal
+    expect(s.get('gone')).toMatchObject({ binding: 'b', paymentResponse: 'P' });
+    s.transition('a', 'paid_not_served', 'serving');
+    s.transition('a', 'serving', 'served', {
+      response: { status: 200, headers: {}, body: new Uint8Array() },
+    });
+    expect(s.markSettled('a', 'b', 'P2')).toBe('served');
+    expect(s.get('a')?.paymentResponse).toBe('P');
   });
 });

@@ -175,6 +175,34 @@ export class ConsumedProofsStore {
   }
 
   /**
+   * Records a SETTLED payment as paid (`settling → paid_not_served`), also when
+   * a concurrent request removed or moved its row meanwhile: the payment did
+   * settle, so it must stay servable once. Atomic; returns the stored state.
+   */
+  markSettled(key: string, binding: string, paymentResponse: string): ProofState {
+    const ts = this.now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO consumed_proofs (key, binding, state, payment_response, created_at, updated_at)
+           VALUES (?, ?, 'paid_not_served', ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET state = 'paid_not_served', payment_response = excluded.payment_response,
+             updated_at = excluded.updated_at
+           WHERE consumed_proofs.state = 'settling'`,
+        )
+        .run(key, binding, paymentResponse, ts, ts);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    const record = this.get(key);
+    if (record === undefined) throw new Error(`consumed proof ${key} vanished`);
+    return record.state;
+  }
+
+  /**
    * Recovers a proof stuck in `serving` (the process died while the handler
    * ran): after `leaseSeconds` it goes back to `paid_not_served` (already
    * settled) or `settling` (authorization flow, not settled yet), so the SAME

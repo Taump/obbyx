@@ -16,6 +16,7 @@ import {
   composeTestUnit,
   testKey,
 } from '../../../packages/obyte/test/helpers.js';
+import { failOnce } from '../../../packages/x402-obyte/test/fail-once.js';
 import { FakeHub } from '../../../packages/x402-obyte/test/fake-hub.js';
 
 const NOW = 1_790_000_010;
@@ -383,23 +384,12 @@ describe('OpenAPI', () => {
 
 describe('unexpected errors during /settle are fail-safe', () => {
   it('a store failure after broadcast is reported as pending with the unit hash, never as a definite failure', async () => {
-    const real = new SqliteSettlementStore(':memory:', () => NOW);
-    let failAccepted = true;
-    const flaky = new Proxy(real, {
-      get(target, prop, receiver) {
-        if (prop === 'transition') {
-          return async (...args: Parameters<SqliteSettlementStore['transition']>) => {
-            if (failAccepted && args[2] === 'accepted') {
-              failAccepted = false;
-              throw new Error('disk full');
-            }
-            return target.transition(...args);
-          };
-        }
-        const v = Reflect.get(target, prop, receiver) as unknown;
-        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
-      },
-    });
+    const flaky = failOnce(
+      new SqliteSettlementStore(':memory:', () => NOW),
+      'transition',
+      (args) => args[2] === 'accepted', // the store fails right after the unit was posted
+      new Error('disk full'),
+    );
     const f = buildFacilitator({
       config: loadFacilitatorConfig({ NETWORKS: NET, FINALITY: 'accepted', HUB_TIMEOUT_MS: '200' }),
       logger: silent,

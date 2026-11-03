@@ -13,6 +13,7 @@ packages/
     logger/ config/
   x402-obyte/   @obbyx/x402-obyte  the x402 mechanisms for Obyte
     hub/          hubCall (timeouts, unknown outcomes), heartbeat, zod schemas of hub answers
+    util/         KeyedQueue (per-key serial execution)
     binding/      HMAC binding of a payment to one request
     coins/        coin selection, durable reservations, reserving composer
     exact/        requirements, client, facilitator (+ ledger checks, finality, reasons), v1 adapter, store port
@@ -50,6 +51,7 @@ code (a CI test enforces it).
 | **Ports and adapters**              | `SettlementStore`, `BatchStore`, `WatcherGateway`, `DiscoveryCatalog`                                                                   | mechanisms know interfaces; node:sqlite reference stores and Prisma stores implement them; one contract test suite runs on both |
 | **State machine + compare-and-set** | exact settlements (`claimed → … → stable_good`), consumed proofs (`settling → serving → served`), coin reservations                     | every transition is atomic, so concurrent requests cannot double-broadcast, double-serve or double-spend coins                  |
 | **Idempotency keys**                | `(network, unit hash)`, voucher hash, payment-identifier                                                                                | a repeated request returns the stored result                                                                                    |
+| **Per-key serial queue**            | `KeyedQueue` (`x402-obyte/src/util`): one voucher per channel in the batch facilitator, one defence per channel in the watcher          | check-then-act never interleaves for one channel inside a process (the database enforces it across processes)                   |
 | **Fail-closed / unknown outcome**   | `hubCall` returns `ok` / `hub_error` / `unknown`; unexpected errors after a claim answer `settlement_pending`                           | an unknown outcome is never success and never a definite failure that releases funds                                            |
 | **Validate at the boundary (zod)**  | HTTP bodies and queries, payment-identifier, hub answers, wallet file, watcher protocol, configuration                                  | everything untrusted is parsed once; inner code works with typed values                                                         |
 | **Builder / composition root**      | `buildMechanisms`, `buildFacilitator`, each app's `main.ts`                                                                             | wiring in one place; tests build the same graph with fakes                                                                      |

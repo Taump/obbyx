@@ -250,10 +250,34 @@ describe('seller watcher', () => {
     expect((unit['authors'] as { address: string }[])[0]!.address).toBe(seller);
   });
 
-  it('closes the channel with the best voucher when the policy says so', async () => {
+  it('a push and the poll pass at the same time send the fraud proof once', async () => {
+    const c = await append(voucherPkg(100), 100n, 'v-race');
+    link.start();
+    await until(async () => (await facilitatorStore.commitment(c.seq))?.state === 'committed');
+    hub.aaVars.set(AA, {
+      period: 1,
+      balanceB: 10_000,
+      close_initiated_by: 'B',
+      close_start_ts: 1,
+      spentByB: 0,
+    });
+    const defender = new Defender({
+      client: offlineClient(hub),
+      store,
+      logger: silent,
+      privateKey: sellerKey,
+      testnet: true,
+      policy: { closeAtAmount: 1_000_000n, closeAfterSeconds: 86_400 },
+    });
+    await Promise.all([defender.tick(), defender.defendNow(AA), defender.defendNow(AA)]);
+    expect(posted).toHaveLength(1);
+  });
+
+  it('announces a seller close first (no new vouchers accepted), then sends it with the best voucher', async () => {
     await append(voucherPkg(100), 100n, 'v4');
     link.start();
     await until(async () => (await store.cursor()) > 0);
+    let now = Math.floor(Date.now() / 1000); // the store stamps actions with real time
     const defender = new Defender({
       client: offlineClient(hub),
       store,
@@ -261,10 +285,25 @@ describe('seller watcher', () => {
       privateKey: sellerKey,
       testnet: true,
       policy: { closeAtAmount: 100n, closeAfterSeconds: 86_400 },
+      closeAnnounceSeconds: 30,
+      announce: () => link.announce(),
+      now: () => now,
     });
+    await defender.tick();
+    expect(posted).toHaveLength(0); // announced only
+    await until(() => gateway.health(seller, NET.caip2, AA).closing === true);
+    expect(gateway.health(seller, NET.caip2, AA)).toMatchObject({ ok: false, closing: true });
+    now += 10;
+    await defender.tick();
+    expect(posted).toHaveLength(0); // still waiting for in-flight vouchers
+    now += 30;
     await defender.tick();
     expect(posted).toHaveLength(1);
     expect(dataOf(posted[0]!)).toMatchObject({ close: 1, period: 1, transferredFromMe: 0 });
+    // the AA moved to the next period: the channel takes vouchers again
+    hub.aaVars.set(AA, { period: 2, balanceB: 0 });
+    await defender.tick();
+    await until(() => gateway.health(seller, NET.caip2, AA).closing !== true);
   });
 });
 

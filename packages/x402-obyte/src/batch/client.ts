@@ -272,6 +272,9 @@ export class BatchObyteClient implements SchemeNetworkClient {
     );
     const pending = channel?.pending;
     if (channel === undefined || pending == null) return;
+    // The answer concerns the voucher of THIS offer only: a replay of another
+    // (earlier) operation must never confirm or drop the voucher now pending.
+    if (requirements.extra['binding'] !== pending.binding) return;
     if (settle?.success === true) {
       this.options.store.confirm(channel.aa, pending.period, BigInt(pending.amountSpent));
       return;

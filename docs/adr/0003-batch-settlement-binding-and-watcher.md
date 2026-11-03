@@ -76,6 +76,15 @@ covered by the client's signature and can live in `signed_message`.
 
 ## Implementation notes (2026-11-03)
 
+- **Missed / duplicated work (pre-merge research).** Reconnect re-delivers all
+  pending entries, not only `seq > cursor` (a stored-but-unacked voucher stayed
+  pending forever). A seller close is announced to the facilitator before it is
+  sent, so no voucher is accepted after the close fixed `sentByPeer`. An honest
+  client close is confirmed after a grace period (vouchers in flight first).
+  Channel defence is serialized per channel (a push and the poll pass sent the
+  same trigger twice). A refusal before settlement carries an explicit
+  PAYMENT-RESPONSE so the client releases its pending voucher.
+
 - **Refusal vs. pending.** A watcher that is not healthy at verification is a
   definite refusal (`…_watcher_unavailable`, nothing stored). A voucher stored
   but not yet acked is `settlement_pending` with `transaction = commitmentId`;

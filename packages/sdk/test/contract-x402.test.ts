@@ -45,6 +45,7 @@ let facilitator: FacilitatorApp;
 let server: Server;
 let base: string;
 let calls: number;
+let failNext = false;
 
 beforeEach(async () => {
   hub = new FakeHub();
@@ -98,6 +99,11 @@ beforeEach(async () => {
   );
   app.post('/api/answer', (req, res) => {
     calls += 1;
+    if (failNext) {
+      failNext = false;
+      res.status(500).json({ error: 'boom' });
+      return;
+    }
     res.json({ answer: 42, q: (req.body as { q: string }).q });
   });
   server = app.listen(0);
@@ -174,6 +180,22 @@ describe('contract: @x402/fetch → @x402/express → obbyx facilitator (exact o
     ]);
     expect(results.map((r) => r.status).sort()).toEqual([200, 402]);
     expect(calls).toBe(1);
+  });
+
+  it('a settled payment whose handler failed serves the same operation on retry (no new payment)', async () => {
+    const offer = await post(fetch, 'retry');
+    const required = decodePaymentRequiredHeader(offer.headers.get('PAYMENT-REQUIRED')!);
+    const header = encodePaymentSignatureHeader(
+      await officialClient().createPaymentPayload(required),
+    );
+    failNext = true;
+    expect((await post(fetch, 'retry', { 'PAYMENT-SIGNATURE': header })).status).toBe(500);
+    const retried = await post(fetch, 'retry', { 'PAYMENT-SIGNATURE': header });
+    expect(retried.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(hub.calls['postJoint']).toBe(1);
+    // once served, the payment is used up
+    expect((await post(fetch, 'retry', { 'PAYMENT-SIGNATURE': header })).status).toBe(402);
   });
 
   it('a payment for one request cannot pay for another (binding)', async () => {

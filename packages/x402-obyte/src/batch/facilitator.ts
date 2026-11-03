@@ -19,6 +19,7 @@ import { type Logger, moduleLogger, withLogContext } from '@obbyx/obyte/logger';
 import type obyte from 'obyte';
 import { acceptedMatches, canonical } from '../exact/requirements.js';
 import { hubCall } from '../hub/hub-call.js';
+import { KeyedQueue } from '../util/keyed-queue.js';
 import { parseStateVars } from '../hub/schemas.js';
 import type { WatcherGateway } from './gateway.js';
 import {
@@ -88,7 +89,8 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
   /** Channel definitions are immutable: cache them. */
   private readonly definitions = new Map<string, ChannelParams>();
   /** One settle at a time per channel inside this process. */
-  private readonly locks = new Map<string, Promise<unknown>>();
+  /** One voucher at a time per channel inside this process (the DB enforces it across processes). */
+  private readonly channels = new KeyedQueue();
 
   constructor(private readonly options: BatchObyteFacilitatorOptions) {
     this.log = moduleLogger(options.logger, 'x402.batch', { scheme: BATCH_SCHEME });
@@ -169,7 +171,7 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
       const c = checked.value;
       const channelKey = this.channelKey(c.req.network.caip2, c.voucher.aa_address);
       return withLogContext({ aa: c.voucher.aa_address, proofId: c.packageHash }, () =>
-        this.withChannelLock(channelKey, () => this.settleLocked(c, channelKey, network)),
+        this.channels.run(channelKey, () => this.settleLocked(c, channelKey, network)),
       );
     });
   }
@@ -402,7 +404,9 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
       return fail(R.balance, 'amount_spent exceeds the confirmed deposit');
 
     // The seller's watcher must be able to defend the channel (fail-closed).
-    const health = this.options.gateway.health(req.payTo, req.network.caip2);
+    const health = this.options.gateway.health(req.payTo, req.network.caip2, v.aa_address);
+    if (!health.ok && health.closing === true)
+      return fail(R.closing, health.reason ?? 'The seller is closing this channel');
     if (!health.ok)
       return fail(R.watcher, health.reason ?? "The seller's watcher is not available");
 
@@ -445,18 +449,6 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
 
   private channelKey(network: string, aa: string): string {
     return networkKey(getNetwork(network), 'aa', aa);
-  }
-
-  private async withChannelLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.locks.get(key) ?? Promise.resolve();
-    const run = previous.then(fn, fn);
-    const settled = run.catch(() => undefined);
-    this.locks.set(key, settled);
-    try {
-      return await run;
-    } finally {
-      if (this.locks.get(key) === settled) this.locks.delete(key);
-    }
   }
 }
 

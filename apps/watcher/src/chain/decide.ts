@@ -26,11 +26,21 @@ export interface BestVoucher {
   readonly firstReceivedAt: number;
 }
 
+/** Pause before confirming an honest client close (vouchers still in flight first). */
+export const DEFAULT_CONFIRM_GRACE_SECONDS = 120;
+
 export interface ClosePolicy {
   /** Close once the period's cumulative amount reaches this (atomic units). */
   readonly closeAtAmount: bigint;
   /** Close once the period's first voucher is this old (seconds). */
   readonly closeAfterSeconds: number;
+  /**
+   * Wait this long after a client-initiated close before confirming it
+   * (default 120 s, at most half the dispute window): vouchers the facilitator
+   * accepted just before the close reached the AA are still being delivered
+   * and acked. A dishonest close is answered with a fraud proof at once.
+   */
+  readonly confirmGraceSeconds?: number;
 }
 
 export type Decision =
@@ -61,7 +71,18 @@ export function decide(input: {
         why: `client declared ${declared} but signed ${ours.amountSpent}`,
       };
     }
-    return { action: 'confirm', period, why: 'client-initiated close is honest; confirm now' };
+    const grace = Math.min(
+      policy.confirmGraceSeconds ?? DEFAULT_CONFIRM_GRACE_SECONDS,
+      Math.floor(timeout / 2),
+    );
+    const confirmAt = (state.closeStartTs ?? 0) + grace; // no start time known: confirm now
+    if (now < confirmAt) {
+      return {
+        action: 'none',
+        why: `honest client close; confirming at ${confirmAt} (in-flight vouchers first)`,
+      };
+    }
+    return { action: 'confirm', period, why: 'client-initiated close is honest' };
   }
 
   if (state.closeInitiatedBy === 'A') {

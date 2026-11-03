@@ -38,6 +38,7 @@ const sellerKey = testKey('seller');
 const seller = addressOf(sellerKey);
 const params = { addressA: seller, addressB: client, asset: 'base', salt: 'e2e', timeout: 7200 };
 const AA = channelAddress(params);
+const AA_KEY = `${NET.caip2}:aa:${AA}`;
 const silent = process.env['E2E_LOG']
   ? createLogger({ level: 'debug' })
   : createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
@@ -69,6 +70,7 @@ let gateway: WsWatcherGateway;
 let server: Server;
 let base: string;
 let link: FacilitatorLink;
+let facilitatorBatch: SqliteBatchStore;
 let watcherStore: WatcherStore;
 let channels: ClientChannelStore;
 let handlerCalls: number;
@@ -79,6 +81,7 @@ beforeEach(async () => {
   hub.aaVars.set(AA, { period: 1, balanceB: 1_000_000 });
 
   const batchStore = new SqliteBatchStore(new SqliteSettlementStore(':memory:').database);
+  facilitatorBatch = batchStore;
   gateway = new WsWatcherGateway({
     store: batchStore,
     logger: silent,
@@ -132,6 +135,13 @@ beforeEach(async () => {
     paywall.paid({ price: { amount: '100' } }, (req) => {
       handlerCalls += 1;
       return { body: { answer: (req.body as { q: string }).q.toUpperCase() } };
+    }),
+  );
+  app.post(
+    '/api/auth',
+    paywall.paid({ price: { amount: '100' }, flow: 'authorization' }, (req) => {
+      handlerCalls += 1;
+      return { body: { answer: (req.body as { q: string }).q } };
     }),
   );
   server = app.listen(0);
@@ -258,5 +268,58 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
     } finally {
       WebSocket.prototype.send = originalSend;
     }
+  });
+
+  it('a voucher stored by the watcher whose ack was lost is committed after the watcher reconnects', async () => {
+    link.start();
+    await until(() => link.connected);
+    const originalSend = WebSocket.prototype.send;
+    let blocked = true;
+    WebSocket.prototype.send = function (this: WebSocket, data: string) {
+      if (blocked && String(data).includes('"ack"')) return;
+      originalSend.call(this, data);
+    };
+    try {
+      const pending = await ask('lost-ack', undefined, 800).catch((e: unknown) => e);
+      expect(pending).toMatchObject({ code: 'settlement_pending' });
+      expect((await facilitatorBatch.commitment(1))?.state).toBe('pending');
+      // The watcher restarts: its cursor (max stored seq) is already 1.
+      blocked = false;
+      link.stop();
+      await until(() => !link.connected);
+      link.start();
+      await until(async () => (await facilitatorBatch.commitment(1))?.state === 'committed');
+      expect((await facilitatorBatch.channel(AA_KEY))?.pendingSeq).toBeNull();
+    } finally {
+      WebSocket.prototype.send = originalSend;
+    }
+  });
+
+  it('a voucher refused before settlement (authorization flow, watcher offline) is released; the next payment works', async () => {
+    // Watcher not connected: verify refuses; nothing is stored at the facilitator.
+    const call = (q: string) =>
+      payingFetch(
+        `${base}/api/auth`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ q }),
+        },
+        {
+          mechanisms: { batch: batchClient() },
+          network: NET.caip2,
+          maxAmount: new Map([['base', 1_000n]]),
+          logger: silent,
+        },
+      );
+    const refused = await call('x');
+    expect(refused.response.status).toBe(402);
+    expect(refused.payment).toMatchObject({ success: false, transaction: '' });
+    expect(channels.get(AA)?.pending).toBeNull(); // released, not wedged
+    link.start();
+    await until(() => link.connected);
+    const ok = await call('y');
+    expect(ok.response.status).toBe(200);
+    expect(channels.get(AA)).toMatchObject({ committed: 100n, pending: null });
   });
 });

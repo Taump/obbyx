@@ -121,6 +121,7 @@ export class FacilitatorLink {
             login,
             cursor: await this.options.store.cursor(),
             bytesBalance: (await this.options.bytesBalance()).toString(),
+            closing: await this.options.store.closingChannels(),
           }),
         );
         return;
@@ -215,6 +216,11 @@ export class FacilitatorLink {
     };
   }
 
+  /** Sends a heartbeat now (e.g. right after a close is announced). */
+  async announce(): Promise<void> {
+    if (this.ws !== undefined && this.connected) await this.sendHeartbeat(this.ws);
+  }
+
   private async sendHeartbeat(ws: WebSocket): Promise<void> {
     if (ws.readyState !== WebSocket.OPEN) return;
     ws.send(
@@ -222,6 +228,7 @@ export class FacilitatorLink {
         type: 'heartbeat',
         cursor: await this.options.store.cursor(),
         bytesBalance: (await this.options.bytesBalance()).toString(),
+        closing: await this.options.store.closingChannels(),
       }),
     );
   }
