@@ -23,7 +23,8 @@
     "docs:check": "pnpm --filter @obbyx/docs-gen gen --check",
     "docs:api": "typedoc",
     "release:check": "pnpm build && pnpm -r --filter \"./packages/*\" --filter \"!@obbyx/docs-gen\" exec pnpm pack --pack-destination ../../.release",
-    "release": "pnpm build && changeset publish"
+    "release": "pnpm build && changeset publish",
+    "upstream:check": "upstream/scripts/link-local.sh && tsc -p upstream/tsconfig.check.json && vitest run --config upstream/vitest.check.config.ts && prettier --config upstream/typescript/packages/mechanisms/obyte/.prettierrc --ignore-path upstream/typescript/packages/mechanisms/obyte/.prettierignore --check 'upstream/typescript/packages/mechanisms/obyte/src/**/*.ts' 'upstream/typescript/packages/mechanisms/obyte/test/**/*.ts'"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",

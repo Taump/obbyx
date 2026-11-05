@@ -60,9 +60,21 @@ The upstream `@x402/obyte` package is a **slim extract**:
 | `batch-settlement` binding: commitment format, verification, storage/id, double-spend, expiry, redemption, trust model | ✅ spec sections 1–7                                                                                                        |
 | Dynamic pricing in `batch-settlement`                                                                                  | ⚠️ deviation: fixed price (`payment_amount == amount`), stated in the spec                                                  |
 | `EXTENSION-RESPONSES` (bazaar)                                                                                         | ✅ (reported after a successful settle)                                                                                     |
-| Three interfaces per mechanism                                                                                         | ✅ `exact`; ❌ `batch-settlement` has no `SchemeNetworkServer` yet (needed before step 3)                                   |
-| Upstream-style tests (`test/unit`, `test/integrations`, `e2e/config/mechanisms_obyte.json`)                            | ❌ to be created in the upstream package (ours: unit, contract and e2e with a fake hub, plus live testnet runs)             |
-| Browser CORS rules of `transports-v2/http.md`                                                                          | ❓ to check in the seller middleware before step 2                                                                          |
+| Three interfaces per mechanism                                                                                         | ✅ `exact` (also in `upstream/`); ✅ `batch-settlement`: `ObyteBatchServer` (contract test with `@x402/express`/`fetch`)    |
+| Upstream-style tests (`test/unit`, `test/integrations`, `e2e/config/mechanisms_obyte.json`)                            | ✅ in `upstream/` (73 tests, `pnpm upstream:check`); upstream's tsup/eslint/e2e run in an upstream checkout                 |
+| Browser CORS rules of `transports-v2/http.md`                                                                          | ✅ `ObytePaywall({ cors })` + `preflight()`; the official middleware leaves CORS to the app (documented)                    |
+
+## Step 2 package (prepared)
+
+`upstream/` holds the contribution at upstream paths: the spec
+(`specs/schemes/exact/`), the package (`typescript/packages/mechanisms/obyte/`,
+Apache-2.0, no `@obbyx/*` imports), the e2e config and a patch registering the
+mechanism in the shared e2e server, client and facilitator, plus a changeset.
+`upstream/scripts/prepare-branch.sh <x402 checkout>` assembles it at
+`upstream/BASE_COMMIT` without committing. Differences from `@obbyx/x402-obyte`:
+in-memory default stores behind interfaces, hub access through an `ObyteHub`
+interface, no v1, server `upfront` flow only, and namespaced seller-side codes
+(`invalid_exact_obyte_payment_reused`, `_payment_already_used`, `_payment_in_progress`).
 
 ## Consequences
 

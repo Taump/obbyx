@@ -1,12 +1,7 @@
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import express from 'express';
-import obyte from 'obyte';
 import {
   HTTPFacilitatorClient,
   decodePaymentRequiredHeader,
@@ -15,23 +10,13 @@ import {
 } from '@x402/core/http';
 import { OBYTE_NETWORKS, channelAddress, channelDefinition } from '@obbyx/obyte';
 import { createLogger } from '@obbyx/obyte/logger';
-import {
-  BatchObyteClient,
-  ClientChannelStore,
-  SqliteBatchStore,
-  SqliteSettlementStore,
-} from '@obbyx/x402-obyte';
+import { BatchObyteClient, ClientChannelStore, type SqliteBatchStore } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadFacilitatorConfig } from '../../../apps/facilitator/src/config.js';
-import {
-  type FacilitatorApp,
-  buildFacilitator,
-} from '../../../apps/facilitator/src/http/server.js';
-import { WsWatcherGateway } from '../../../apps/facilitator/src/watcher/gateway.js';
-import { WatcherStore, openWatcherDatabase } from '../../../apps/watcher/src/storage/store.js';
-import { FacilitatorLink } from '../../../apps/watcher/src/facilitator/link.js';
+import type { WatcherStore } from '../../../apps/watcher/src/storage/store.js';
+import type { FacilitatorLink } from '../../../apps/watcher/src/facilitator/link.js';
 import { addressOf, testKey } from '../../obyte/test/helpers.js';
 import { FakeHub } from '../../x402-obyte/test/fake-hub.js';
+import { type ChannelStack, hubClient, startChannelStack, until } from './channel-stack.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { payingFetch } from '../src/client/paying-fetch.js';
 import { ObytePaywall } from '../src/seller/paywall.js';
@@ -48,30 +33,8 @@ const silent = process.env['E2E_LOG']
   ? createLogger({ level: 'debug' })
   : createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
 
-function watcherDbFile(): string {
-  const file = join(mkdtempSync(join(tmpdir(), 'obbyx-e2e-')), 'watcher.db');
-  const db = new DatabaseSync(file);
-  const dir = new URL('../../../apps/watcher/prisma/migrations/', import.meta.url).pathname;
-  for (const m of readdirSync(dir)
-    .filter((d) => !d.endsWith('.toml'))
-    .sort()) {
-    db.exec(readFileSync(join(dir, m, 'migration.sql'), 'utf8'));
-  }
-  db.close();
-  return file;
-}
-
-/** obyte.js client whose hub requests go to the FakeHub (no network). */
-function hubClient(hub: FakeHub): obyte.Client {
-  const c = new obyte.Client('ws://127.0.0.1:9', { testnet: true });
-  c.close();
-  Object.assign((c as unknown as { api: object }).api, hub.client.api);
-  return c;
-}
-
 let hub: FakeHub;
-let facilitator: FacilitatorApp;
-let gateway: WsWatcherGateway;
+let stack: ChannelStack;
 let server: Server;
 let base: string;
 let link: FacilitatorLink;
@@ -85,43 +48,11 @@ beforeEach(async () => {
   hub.definitions.set(AA, channelDefinition(params));
   hub.aaVars.set(AA, { period: 1, balanceB: 1_000_000 });
 
-  const batchStore = new SqliteBatchStore(new SqliteSettlementStore(':memory:').database);
-  facilitatorBatch = batchStore;
-  gateway = new WsWatcherGateway({
-    store: batchStore,
-    logger: silent,
-    networks: [NET.caip2],
-    minBytes: 0n,
-    heartbeatTimeoutMs: 60_000,
-  });
-  facilitator = buildFacilitator({
-    config: loadFacilitatorConfig({
-      NETWORKS: NET.caip2,
-      WATCHER_ACK_TIMEOUT_MS: '300',
-      MIN_CHANNEL_TIMEOUT_SECONDS: '3600',
-    }),
-    logger: silent,
-    store: new SqliteSettlementStore(':memory:'),
-    clients: new Map([[NET.caip2, hub.asClient()]]),
-    batch: { store: batchStore, gateway },
-  });
-  gateway.attach(facilitator.http.server);
-  const facilitatorUrl = await facilitator.http.listen({ host: '127.0.0.1', port: 0 });
-
-  watcherStore = new WatcherStore(await openWatcherDatabase(watcherDbFile()));
-  link = new FacilitatorLink({
-    url: `${facilitatorUrl.replace('http', 'ws')}/watcher`,
-    network: NET,
-    seller,
-    privateKey: sellerKey,
-    client: hubClient(hub),
-    store: watcherStore,
-    logger: silent,
-    bytesBalance: async () => 1_000_000n,
-  });
+  stack = await startChannelStack({ hub, network: NET, seller, sellerKey, logger: silent });
+  ({ link, watcherStore, batchStore: facilitatorBatch } = stack);
 
   const paywall = new ObytePaywall({
-    facilitator: new HTTPFacilitatorClient({ url: facilitatorUrl }),
+    facilitator: new HTTPFacilitatorClient({ url: stack.facilitatorUrl }),
     network: NET.caip2,
     payTo: seller,
     sellerId: 'api',
@@ -164,12 +95,10 @@ beforeEach(async () => {
   });
 });
 
+// Optional chaining: when beforeEach failed, report that error only.
 afterEach(async () => {
-  link.stop();
-  server.close();
-  await gateway.close();
-  await facilitator.http.close();
-  await watcherStore.close();
+  server?.close();
+  await stack?.close();
 });
 
 const batchClient = () =>
@@ -199,20 +128,6 @@ const ask = (q: string, header?: string, pendingTimeoutMs = 120_000) =>
     },
   );
 
-const until = async (cond: () => boolean | Promise<boolean>, ms = 3000) => {
-  const end = Date.now() + ms;
-  while (!(await cond())) {
-    if (Date.now() > end) throw new Error('condition not met');
-    await new Promise((r) => setTimeout(r, 15));
-  }
-};
-
-/** Starts the seller's watcher and waits until the facilitator accepted its login. */
-const connectWatcher = async () => {
-  link.start();
-  await until(() => link.connected);
-};
-
 /**
  * A voucher signed for the CURRENT offer of `q` with a deposit the client
  * believes in (`claimedBalance`), bypassing the client's own balance check.
@@ -234,7 +149,7 @@ async function signDespiteBalance(q: string, claimedBalance: number) {
 
 describe('end to end: AA channel payments (batch-settlement)', () => {
   it('pays per call with cumulative vouchers; the watcher holds every paid voucher', async () => {
-    await connectWatcher();
+    await stack.connectWatcher();
 
     const first = await ask('a');
     expect(first.response.status).toBe(200);
@@ -263,14 +178,14 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
     // The facilitator refused at verification (watcher not connected): nothing pending anywhere.
     expect(channels.get(AA)?.pending).toBeNull();
 
-    await connectWatcher();
+    await stack.connectWatcher();
     const paid = await ask('x');
     expect(paid.response.status).toBe(200);
     expect(channels.get(AA)).toMatchObject({ committed: 100n });
   });
 
   it('a voucher whose ack is lost stays pending; the client signs nothing new until the same operation is retried', async () => {
-    await connectWatcher();
+    await stack.connectWatcher();
     // Simulate a watcher that stops acking (e.g. disk full): stop the link after login.
     const originalSend = WebSocket.prototype.send;
     let blocked = true;
@@ -298,7 +213,7 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
   });
 
   it('a voucher stored by the watcher whose ack was lost is committed after the watcher reconnects', async () => {
-    await connectWatcher();
+    await stack.connectWatcher();
     const originalSend = WebSocket.prototype.send;
     let blocked = true;
     WebSocket.prototype.send = function (this: WebSocket, data: string) {
@@ -342,7 +257,7 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
     expect(refused.response.status).toBe(402);
     expect(refused.payment).toMatchObject({ success: false, transaction: '' });
     expect(channels.get(AA)?.pending).toBeNull(); // released, not wedged
-    await connectWatcher();
+    await stack.connectWatcher();
     const ok = await call('y');
     expect(ok.response.status).toBe(200);
     expect(channels.get(AA)).toMatchObject({ committed: 100n, pending: null });
@@ -352,7 +267,7 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
 describe('a buyer can never spend more than the confirmed deposit', () => {
   it('deposit 250, price 100: two calls are paid, the third is refused before anything is signed', async () => {
     hub.aaVars.set(AA, { period: 1, balanceB: 250 });
-    await connectWatcher();
+    await stack.connectWatcher();
     expect((await ask('one')).response.status).toBe(200);
     expect((await ask('two')).response.status).toBe(200);
     await expect(ask('three')).rejects.toMatchObject({ code: 'channel_exhausted' });
@@ -362,7 +277,7 @@ describe('a buyer can never spend more than the confirmed deposit', () => {
 
   it('a client that bypasses its own check is refused by the facilitator (above the deposit)', async () => {
     hub.aaVars.set(AA, { period: 1, balanceB: 250 });
-    await connectWatcher();
+    await stack.connectWatcher();
     expect((await ask('one')).response.status).toBe(200);
     expect((await ask('two')).response.status).toBe(200);
     // a modified client signs a voucher for 300 although the deposit is 250

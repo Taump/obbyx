@@ -13,3 +13,6 @@ docs/reference/facilitator-api.md
 docs/public/openapi.json
 docs/public/api/
 .release/
+
+# The upstream x402 contribution is formatted with its own .prettierrc (pnpm upstream:check)
+upstream/

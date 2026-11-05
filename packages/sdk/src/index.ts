@@ -32,4 +32,13 @@ export {
   type BudgetReservation,
   SpendingBudget,
 } from './client/budget.js';
-export { ObyteExactServer, type ObyteExactServerOptions } from './seller/x402-server.js';
+export {
+  ObyteBatchServer,
+  type ObyteBatchServerOptions,
+  ObyteExactServer,
+  type ObyteExactServerOptions,
+  ObyteSchemeServer,
+  type ObyteSchemeSpec,
+  type ObyteSchemeServerOptions,
+} from './seller/x402-server.js';
+export type { PaywallCorsOptions } from './seller/cors.js';

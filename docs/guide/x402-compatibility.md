@@ -15,8 +15,9 @@ Contract tests run the official packages against obbyx on every CI run
 | Bazaar discovery                          | yes          | `GET /discovery/resources`, `GET /discovery/search`; listed in `/supported.extensions` |
 | `EXTENSION-RESPONSES` header              | yes          | facilitator → resource server; reports `bazaar` cataloging `success` / `rejected`      |
 | `payment-identifier`                      | yes          | in `ObytePaywall` (seller side) and `payingFetch` (client side)                        |
-| Official `@x402/fetch` client             | yes          | register `ExactObyteClient`; set spend controls for GBYTE (below)                      |
-| Official `@x402/express` seller           | yes          | register `ObyteExactServer`; see the limitation below                                  |
+| Official `@x402/fetch` client             | yes          | register `ExactObyteClient` and/or `BatchObyteClient`; set spend controls for GBYTE    |
+| Official `@x402/express` seller           | yes          | register `ObyteExactServer` and/or `ObyteBatchServer`; see the limitation below        |
+| Browser clients (CORS)                    | yes          | `ObytePaywall({ cors })` + `paywall.preflight()`; with `@x402/express`, the app's CORS |
 
 ## Official client (`@x402/fetch`)
 
@@ -45,6 +46,11 @@ const paidFetch = wrapFetchWithPayment(fetch, client);
 
 For v1 sellers use `registerV1('obyte-testnet', …)` with the same mechanism and
 allow `network: 'obyte-testnet'` in spend controls.
+
+For channel payments register a `BatchObyteClient` too (it needs an open
+channel; see [payment channels](./channels.md)). It reads the seller's
+PAYMENT-RESPONSE through the client's `onPaymentResponse` hook, so the voucher
+is confirmed or released exactly as with `payingFetch`.
 
 ## Official seller (`@x402/express`)
 
@@ -84,6 +90,53 @@ app.use(
 `ObyteExactServer` adds the per-request binding (an HMAC over the method, URL,
 body and price) to every offer, so a payment for one request cannot pay for
 another, and it records each proof so it is used for one operation only.
+
+### Channel payments (`batch-settlement`)
+
+Register `ObyteBatchServer` next to (or instead of) `ObyteExactServer`. The
+facilitator must run with batch-settlement and your watcher connected;
+`minChannelTimeoutSeconds` must match its `MIN_CHANNEL_TIMEOUT_SECONDS`.
+
+```ts
+import { ObyteBatchServer } from '@obbyx/sdk';
+
+server.register(
+  'obyte:testnet',
+  new ObyteBatchServer({
+    sellerId: 'api',
+    secret: SELLER_SECRET,
+    proofs,
+    minChannelTimeoutSeconds: 3600,
+  }),
+);
+// route: accepts: { scheme: 'batch-settlement', network: 'obyte:testnet', payTo, price: '100 bytes' }
+```
+
+Both server classes support the `upfront` flow only: the payment is claimed and
+settled before the handler runs, so one payment never reaches the handler
+twice. A route may list both schemes in `accepts`.
+
+### Browser clients (CORS)
+
+None of the x402 headers is CORS-safelisted. With `ObytePaywall`, pass
+`cors: { origins: ['https://app.example'] }` and mount `paywall.preflight()`
+before the routes: the 402 then carries `Access-Control-Allow-Origin`, the
+expose list keeps any existing names and adds `PAYMENT-REQUIRED` and
+`PAYMENT-RESPONSE`, and preflights are answered without payment, allowing
+`PAYMENT-SIGNATURE` and `Content-Type` with a 10-minute `Access-Control-Max-Age`.
+The official `@x402/express` middleware passes `OPTIONS` through and leaves CORS
+to the app, for example with the `cors` package:
+
+```ts
+app.use(
+  cors({
+    origin: ['https://app.example'],
+    exposedHeaders: ['PAYMENT-REQUIRED', 'PAYMENT-RESPONSE'],
+    allowedHeaders: ['PAYMENT-SIGNATURE', 'Content-Type'],
+    maxAge: 600,
+  }),
+);
+```
 
 **Limitation.** The official middleware has no "stored response" path: if the
 response to a paid request is lost, the repeated request gets a new 402 instead

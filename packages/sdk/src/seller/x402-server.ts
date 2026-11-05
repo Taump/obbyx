@@ -9,6 +9,7 @@ import type {
   SchemeServerHooks,
 } from '@x402/core/types';
 import {
+  CHANNEL_BASE_AA,
   ObbyxError,
   fromDisplay,
   getNetwork,
@@ -17,14 +18,24 @@ import {
   parseAmount,
 } from '@obbyx/obyte';
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
-import { EXACT_SCHEME, bindingsEqual, exactExtraSchema } from '@obbyx/x402-obyte';
+import {
+  BATCH_SCHEME,
+  EXACT_SCHEME,
+  batchExtraSchema,
+  bindingsEqual,
+  canonical,
+  exactExtraSchema,
+  sha256Hex,
+} from '@obbyx/x402-obyte';
 import type { ConsumedProofsStore } from './consumed-proofs.js';
 import { DEFAULT_QUOTE_TTL_SECONDS, DEFAULT_SERVING_LEASE_SECONDS } from './defaults.js';
 import { type Quote, bodyHashOf, newQuote, offerBinding } from './quote.js';
 
 /**
- * Obyte `exact` for the OFFICIAL x402 resource server (`@x402/core/server`,
- * `@x402/express`, `@x402/hono`, …): a SchemeNetworkServer.
+ * Obyte schemes for the OFFICIAL x402 resource server (`@x402/core/server`,
+ * `@x402/express`, `@x402/hono`, …): SchemeNetworkServer implementations for
+ * `exact` ({@link ObyteExactServer}) and `batch-settlement`
+ * ({@link ObyteBatchServer}), sharing {@link ObyteSchemeServer}.
  *
  * - Binding (I1/I2): `enrichPaymentRequiredResponse` adds a per-request HMAC
  *   binding + quote to every offer. On a paid request it recomputes the HMAC
@@ -38,7 +49,7 @@ import { type Quote, bodyHashOf, newQuote, offerBinding } from './quote.js';
  *   Unlike `@obbyx/sdk`'s ObytePaywall, a repeated request gets a 402 instead
  *   of the stored response (the official middleware cannot replay responses).
  */
-export interface ObyteExactServerOptions {
+export interface ObyteSchemeServerOptions {
   /** How long a request may hold a payment in `serving` before a retry takes over (default 300 s). */
   readonly servingLeaseSeconds?: number;
   readonly sellerId: string;
@@ -72,8 +83,32 @@ function requestOf(transportContext: unknown): RequestLike | undefined {
   };
 }
 
-export class ObyteExactServer implements SchemeNetworkServer {
-  readonly scheme = EXACT_SCHEME;
+/** @deprecated Use {@link ObyteSchemeServerOptions}. */
+export type ObyteExactServerOptions = ObyteSchemeServerOptions;
+
+/** Options of {@link ObyteBatchServer}. */
+export interface ObyteBatchServerOptions extends ObyteSchemeServerOptions {
+  /** Minimum channel dispute window the seller accepts (seconds); must match the facilitator's. */
+  readonly minChannelTimeoutSeconds: number;
+}
+
+/** Per-scheme parts of an Obyte resource-server scheme. */
+export interface ObyteSchemeSpec {
+  readonly scheme: typeof EXACT_SCHEME | typeof BATCH_SCHEME;
+  /** `extra` fields the scheme adds to every offer besides binding and quote. */
+  readonly staticExtra: Record<string, unknown>;
+  /** Parses the quote fields of the accepted offer. */
+  readonly acceptedExtra: (extra: unknown) => {
+    readonly binding: string;
+    readonly quoteId: string;
+    readonly validUntil: number;
+  };
+  /** Proof id and key kind of a payment payload (undefined when malformed). */
+  readonly proofOf: (payload: Record<string, unknown>) => { kind: string; id: string } | undefined;
+}
+
+export abstract class ObyteSchemeServer implements SchemeNetworkServer {
+  readonly scheme: string;
   readonly defaultAssetTransferMethod = 'default';
   readonly paymentFlows = {
     default: { supported: ['upfront'] as const, default: 'upfront' as const },
@@ -83,24 +118,25 @@ export class ObyteExactServer implements SchemeNetworkServer {
   private readonly log: Logger;
   private readonly now: () => number;
 
-  constructor(private readonly options: ObyteExactServerOptions) {
-    this.log = moduleLogger(options.logger, 'sdk.x402-server', { scheme: EXACT_SCHEME });
+  protected constructor(
+    private readonly options: ObyteSchemeServerOptions,
+    private readonly spec: ObyteSchemeSpec,
+  ) {
+    this.scheme = spec.scheme;
+    this.log = moduleLogger(options.logger, 'sdk.x402-server', { scheme: spec.scheme });
     this.now = options.now ?? (() => Math.floor(Date.now() / 1000));
     this.schemeHooks = {
       onBeforeVerify: async (ctx) => {
-        const unit = (ctx.paymentPayload.payload as { unit?: { unit?: unknown } }).unit?.unit;
+        const key = this.keyOf(ctx);
         const binding = (ctx.requirements.extra as { binding?: unknown }).binding;
-        if (typeof unit !== 'string' || typeof binding !== 'string') {
+        if (key === undefined || typeof binding !== 'string') {
           return { abort: true, reason: 'invalid_payload' };
         }
-        const { record } = this.options.proofs.begin(
-          this.key(ctx.requirements.network, unit),
-          binding,
-        );
+        const { record } = this.options.proofs.begin(key, binding);
         if (!bindingsEqual(record.binding, binding))
           return { abort: true, reason: 'invalid_payment_reused' };
         if (record.state === 'served') {
-          this.log.warn({ proofId: unit }, 'payment already served a request; refused');
+          this.log.warn({ proofId: key }, 'payment already served a request; refused');
           return { abort: true, reason: 'payment_already_used' };
         }
         return undefined;
@@ -183,7 +219,7 @@ export class ObyteExactServer implements SchemeNetworkServer {
     return asset === 'base' ? 9 : undefined;
   }
 
-  /** Nothing to add from /supported for exact; the per-request fields come from the enrich hook. */
+  /** Nothing to add from /supported; the per-request fields come from the enrich hook. */
   async enhancePaymentRequirements(
     requirements: PaymentRequirements,
   ): Promise<PaymentRequirements> {
@@ -196,20 +232,21 @@ export class ObyteExactServer implements SchemeNetworkServer {
   ): Promise<PaymentRequirements[]> => {
     const request = requestOf(ctx.transportContext);
     if (request === undefined)
-      throw new ObbyxError('no_request', 'Obyte exact needs the HTTP request context');
+      throw new ObbyxError('no_request', `Obyte ${this.scheme} needs the HTTP request context`);
     const accepted = this.acceptedQuote(request);
     return ctx.requirements.map((req) => {
-      if (req.scheme !== EXACT_SCHEME) return req;
+      if (req.scheme !== this.spec.scheme) return req;
       const quote =
         accepted !== undefined &&
         bindingsEqual(this.bindingFor(req, request, accepted), accepted.binding)
           ? accepted
           : undefined;
-      if (quote !== undefined) return { ...req, extra: { ...req.extra, ...quote } };
+      const extra = { ...req.extra, ...this.spec.staticExtra };
+      if (quote !== undefined) return { ...req, extra: { ...extra, ...quote } };
       const fresh = newQuote(this.now(), this.options.quoteTtlSeconds ?? DEFAULT_QUOTE_TTL_SECONDS);
       return {
         ...req,
-        extra: { ...req.extra, binding: this.bindingFor(req, request, fresh), ...fresh },
+        extra: { ...extra, binding: this.bindingFor(req, request, fresh), ...fresh },
       };
     });
   };
@@ -217,10 +254,10 @@ export class ObyteExactServer implements SchemeNetworkServer {
   private acceptedQuote(request: RequestLike) {
     if (request.paymentHeader === undefined) return undefined;
     try {
-      const extra = exactExtraSchema.safeParse(
-        decodePaymentSignatureHeader(request.paymentHeader).accepted?.extra,
-      );
-      return extra.success ? extra.data : undefined;
+      const accepted = decodePaymentSignatureHeader(request.paymentHeader).accepted;
+      if (accepted?.scheme !== this.spec.scheme) return undefined;
+      const extra = this.spec.acceptedExtra(accepted.extra);
+      return { quoteId: extra.quoteId, validUntil: extra.validUntil, binding: extra.binding };
     } catch {
       return undefined;
     }
@@ -229,7 +266,7 @@ export class ObyteExactServer implements SchemeNetworkServer {
   private bindingFor(req: PaymentRequirements, request: RequestLike, quote: Quote): string {
     return offerBinding(
       this.options,
-      EXACT_SCHEME,
+      this.spec.scheme,
       quote,
       { method: request.method, url: request.url, bodyHash: bodyHashOf(request.body) },
       { network: req.network, asset: req.asset, amount: req.amount, payTo: req.payTo },
@@ -241,11 +278,46 @@ export class ObyteExactServer implements SchemeNetworkServer {
     paymentPayload: { payload: Record<string, unknown> };
     requirements: { network: string };
   }): string | undefined {
-    const unit = (ctx.paymentPayload.payload as { unit?: { unit?: unknown } }).unit?.unit;
-    return typeof unit === 'string' ? this.key(ctx.requirements.network, unit) : undefined;
+    const proof = this.spec.proofOf(ctx.paymentPayload.payload);
+    return proof === undefined
+      ? undefined
+      : networkKey(getNetwork(ctx.requirements.network), proof.kind, proof.id);
   }
+}
 
-  private key(network: string, unit: string): string {
-    return networkKey(getNetwork(network), 'unit', unit);
+/** `exact`: the proof is the unit (key `<network>:unit:<hash>`, as ObytePaywall). */
+export class ObyteExactServer extends ObyteSchemeServer {
+  constructor(options: ObyteSchemeServerOptions) {
+    super(options, {
+      scheme: EXACT_SCHEME,
+      staticExtra: {},
+      acceptedExtra: (extra) => exactExtraSchema.parse(extra),
+      proofOf: (payload) => {
+        const unit = (payload as { unit?: { unit?: unknown } }).unit?.unit;
+        return typeof unit === 'string' ? { kind: 'unit', id: unit } : undefined;
+      },
+    });
+  }
+}
+
+/**
+ * `batch-settlement` (AA payment channels): the proof is the voucher (key
+ * `<network>:voucher:<sha256 of the canonical signed package>`, as
+ * ObytePaywall). Offers carry the channel base AA and the minimum dispute
+ * window. Needs a facilitator with batch-settlement and the seller's watcher.
+ */
+export class ObyteBatchServer extends ObyteSchemeServer {
+  constructor(options: ObyteBatchServerOptions) {
+    super(options, {
+      scheme: BATCH_SCHEME,
+      staticExtra: { baseAa: CHANNEL_BASE_AA, minTimeout: options.minChannelTimeoutSeconds },
+      acceptedExtra: (extra) => batchExtraSchema.parse(extra),
+      proofOf: (payload) => {
+        const pkg = payload['signedPackage'];
+        return pkg !== null && typeof pkg === 'object'
+          ? { kind: 'voucher', id: sha256Hex(canonical(pkg)) }
+          : undefined;
+      },
+    });
   }
 }

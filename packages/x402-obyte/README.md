@@ -46,6 +46,10 @@ const paidFetch = wrapFetchWithPayment(
 const res = await paidFetch('https://api.example/paid');
 ```
 
+For channel payments register a `BatchObyteClient` as well: it confirms or
+releases its voucher from the seller's PAYMENT-RESPONSE through the client's
+`onPaymentResponse` hook.
+
 Add a `ReservingComposer` (`composer` option) when one wallet pays concurrently:
 it guarantees two payments never pick the same coins.
 

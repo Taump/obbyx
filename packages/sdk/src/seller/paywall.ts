@@ -44,6 +44,12 @@ import {
 } from './quote.js';
 import type { ConsumedProofsStore, StoredResponse } from './consumed-proofs.js';
 import {
+  type PaywallCorsOptions,
+  allowOrigin,
+  exposePaymentHeaders,
+  preflightHandler,
+} from './cors.js';
+import {
   DEFAULT_MAX_TIMEOUT_SECONDS,
   DEFAULT_QUOTE_TTL_SECONDS,
   DEFAULT_SERVING_LEASE_SECONDS,
@@ -122,10 +128,14 @@ export interface ObytePaywallOptions {
   readonly paymentIdentifier?: { readonly required: boolean };
   /** Enables batch-settlement (AA payment channels) offers; requires a running seller watcher. */
   readonly batch?: { readonly minChannelTimeoutSeconds: number };
+  /**
+   * CORS for browser clients on another origin (x402 HTTP transport, "Browser
+   * clients"). Also mount {@link ObytePaywall.preflight} before the routes.
+   * Without it, same-origin pages and non-browser clients work as before.
+   */
+  readonly cors?: PaywallCorsOptions;
   readonly now?: () => number;
 }
-
-const EXPOSE = 'PAYMENT-REQUIRED, PAYMENT-RESPONSE';
 
 export class ObytePaywall {
   private readonly log: Logger;
@@ -143,6 +153,15 @@ export class ObytePaywall {
     }
     this.log = moduleLogger(options.logger, 'sdk.paywall', { network: options.network });
     this.now = options.now ?? (() => Math.floor(Date.now() / 1000));
+  }
+
+  /**
+   * Answers CORS preflight requests (`app.use(paywall.preflight())`); a no-op
+   * without the `cors` option. Preflights never require payment.
+   */
+  preflight(): RequestHandler {
+    const cors = this.options.cors;
+    return cors === undefined ? (_req, _res, next) => next() : preflightHandler(cors);
   }
 
   /** Wraps a handler so it only runs after a settled payment. */
@@ -165,7 +184,8 @@ export class ObytePaywall {
     price: { asset: string; amount: string },
     handler: PaidHandler,
   ): Promise<void> {
-    res.setHeader('Access-Control-Expose-Headers', EXPOSE);
+    exposePaymentHeaders(res);
+    if (this.options.cors !== undefined) allowOrigin(req, res, this.options.cors);
     res.setHeader('Cache-Control', 'private, no-store');
     const header = req.get('payment-signature');
     if (header === undefined) return this.paymentRequired(req, res, route, price);

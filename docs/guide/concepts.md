@@ -81,6 +81,6 @@ outage; clients keep retrying the same payment and never pay twice.
 | Component         | Where                                                    | Runs by                   |
 | ----------------- | -------------------------------------------------------- | ------------------------- |
 | Facilitator       | `apps/facilitator`                                       | anyone (the operator)     |
-| Seller middleware | `@obbyx/sdk` (`ObytePaywall`, `ObyteExactServer`)        | the seller                |
+| Seller middleware | `@obbyx/sdk` (`ObytePaywall`, `Obyte*Server`)            | the seller                |
 | Seller watcher    | `apps/watcher`                                           | the seller (for channels) |
 | Client            | `@obbyx/sdk` (`payingFetch`), `obbyx` CLI, `@x402/fetch` | the buyer / agent         |

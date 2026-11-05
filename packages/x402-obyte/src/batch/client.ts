@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type {
   PaymentPayloadResult,
   PaymentRequirements,
+  SchemeClientHooks,
   SchemeNetworkClient,
   SettleResponse,
 } from '@x402/core/types';
@@ -159,6 +160,16 @@ export function confirmClose(
 
 export class BatchObyteClient implements SchemeNetworkClient {
   readonly scheme = BATCH_SCHEME;
+  /**
+   * The official x402 clients (`@x402/fetch`, `@x402/axios`) report the
+   * seller's PAYMENT-RESPONSE here, so the voucher is confirmed or released
+   * exactly as with `payingFetch`.
+   */
+  readonly schemeHooks: SchemeClientHooks = {
+    onPaymentResponse: async (ctx) => {
+      this.onSettled(ctx.requirements, ctx.settleResponse);
+    },
+  };
   private readonly log: Logger;
 
   constructor(private readonly options: BatchClientOptions) {

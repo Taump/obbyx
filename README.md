@@ -157,15 +157,15 @@ fall back to `exact` otherwise.
 
 ### Components
 
-| Component      | Path                                                | Role                                                                                        |
-| -------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Facilitator    | `apps/facilitator`                                  | x402 `/verify`, `/settle`, `/supported`, Bazaar discovery; verifies and broadcasts payments |
-| Seller SDK     | `packages/sdk` (`ObytePaywall`, `ObyteExactServer`) | 402 offers bound to the request; one payment = one operation                                |
-| Buyer SDK      | `packages/sdk` (`payingFetch`, `SpendingBudget`)    | pays within per-call and total limits; never pays twice                                     |
-| Mechanisms     | `packages/x402-obyte`                               | the x402 scheme implementations for Obyte                                                   |
-| Seller watcher | `apps/watcher`                                      | stores vouchers, closes channels, answers disputes                                          |
-| CLI            | `packages/cli` (`obbyx`)                            | wallet, faucet, pay, channels, diagnostics, logs                                            |
-| Demo           | `apps/demo`                                         | a paid demo API and a playground page                                                       |
+| Component      | Path                                             | Role                                                                                        |
+| -------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Facilitator    | `apps/facilitator`                               | x402 `/verify`, `/settle`, `/supported`, Bazaar discovery; verifies and broadcasts payments |
+| Seller SDK     | `packages/sdk` (`ObytePaywall`, `Obyte*Server`)  | 402 offers bound to the request; one payment = one operation                                |
+| Buyer SDK      | `packages/sdk` (`payingFetch`, `SpendingBudget`) | pays within per-call and total limits; never pays twice                                     |
+| Mechanisms     | `packages/x402-obyte`                            | the x402 scheme implementations for Obyte                                                   |
+| Seller watcher | `apps/watcher`                                   | stores vouchers, closes channels, answers disputes                                          |
+| CLI            | `packages/cli` (`obbyx`)                         | wallet, faucet, pay, channels, diagnostics, logs                                            |
+| Demo           | `apps/demo`                                      | a paid demo API and a playground page                                                       |
 
 ## Install
 
@@ -173,12 +173,12 @@ Requires **Node.js 24**.
 
 ### Packages (npm)
 
-| Package                                                                | Install                             | For                                                                     |
-| ---------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
-| [`@obbyx/cli`](https://www.npmjs.com/package/@obbyx/cli)               | `npm i -g @obbyx/cli`               | the `obbyx` command: wallet, faucet, pay, channels                      |
-| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `ObyteExactServer`) and buyers (`payingFetch`) |
-| [`@obbyx/x402-obyte`](https://www.npmjs.com/package/@obbyx/x402-obyte) | `npm i @obbyx/x402-obyte obyte`     | the Obyte mechanisms for the official `@x402/*` packages                |
-| [`@obbyx/obyte`](https://www.npmjs.com/package/@obbyx/obyte)           | installed with the above            | networks, amounts, validation, wallet, logger                           |
+| Package                                                                | Install                             | For                                                                                         |
+| ---------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------- |
+| [`@obbyx/cli`](https://www.npmjs.com/package/@obbyx/cli)               | `npm i -g @obbyx/cli`               | the `obbyx` command: wallet, faucet, pay, channels                                          |
+| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `ObyteExactServer`, `ObyteBatchServer`) and buyers (`payingFetch`) |
+| [`@obbyx/x402-obyte`](https://www.npmjs.com/package/@obbyx/x402-obyte) | `npm i @obbyx/x402-obyte obyte`     | the Obyte mechanisms for the official `@x402/*` packages                                    |
+| [`@obbyx/obyte`](https://www.npmjs.com/package/@obbyx/obyte)           | installed with the above            | networks, amounts, validation, wallet, logger                                               |
 
 ```sh
 npm i -g @obbyx/cli
@@ -442,17 +442,23 @@ app.use(
 );
 ```
 
+For channel payments register `BatchObyteClient` (buyer, needs an open
+channel) and `ObyteBatchServer` (seller, needs the facilitator's
+batch-settlement and your watcher) the same way; a route may accept both
+schemes. Browser clients on another origin need CORS (`ObytePaywall({ cors })`,
+or the app's CORS middleware with `@x402/express`).
+
 **Facilitator** — run `apps/facilitator`; any x402 resource server talks to it
 over the standard HTTP API (`/verify`, `/settle`, `/supported`;
 [OpenAPI](docs/reference/facilitator-api.md)).
 
-| Feature                                | Official packages             | obbyx SDK (`ObytePaywall`, `payingFetch`) |
-| -------------------------------------- | ----------------------------- | ----------------------------------------- |
-| `exact`                                | ✅                            | ✅                                        |
-| `batch-settlement` (channels)          | not yet (no server mechanism) | ✅                                        |
-| stored response for a repeated request | —                             | ✅                                        |
-| `payment-identifier`, spending budgets | —                             | ✅                                        |
-| x402 v1                                | ✅ client + facilitator       | —                                         |
+| Feature                                | Official packages       | obbyx SDK (`ObytePaywall`, `payingFetch`) |
+| -------------------------------------- | ----------------------- | ----------------------------------------- |
+| `exact`                                | ✅                      | ✅                                        |
+| `batch-settlement` (channels)          | ✅                      | ✅                                        |
+| stored response for a repeated request | —                       | ✅                                        |
+| `payment-identifier`, spending budgets | —                       | ✅                                        |
+| x402 v1                                | ✅ client + facilitator | —                                         |
 
 Details: [x402 compatibility](docs/guide/x402-compatibility.md).
 

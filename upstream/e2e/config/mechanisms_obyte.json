@@ -1,0 +1,27 @@
+{
+  "env": {
+    "SERVER_OBYTE_ADDRESS": { "required": true, "roles": ["server"] },
+    "SERVER_OBYTE_BINDING_SECRET": { "required": true, "roles": ["server"] },
+    "CLIENT_OBYTE_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "OBYTE_FINALITY": { "required": false, "roles": ["facilitator"] }
+  },
+  "testnet": {
+    "name": "Obyte Testnet",
+    "caip2": "obyte:testnet",
+    "rpcUrlDefault": "wss://obyte.org/bb-test"
+  },
+  "mainnet": {
+    "name": "Obyte Livenet",
+    "caip2": "obyte:livenet",
+    "rpcUrlDefault": "wss://obyte.org/bb"
+  },
+  "routes": {
+    "/exact/obyte/upfront": {
+      "scheme": "exact",
+      "sdks": ["typescript"],
+      "paymentFlow": "upfront",
+      "price": { "amount": "20000", "asset": "base" },
+      "extensions": ["bazaar"]
+    }
+  }
+}

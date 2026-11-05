@@ -1,0 +1,207 @@
+diff --git a/e2e/clients/typescript/client.ts b/e2e/clients/typescript/client.ts
+index cf45dd8..499c92a 100644
+--- a/e2e/clients/typescript/client.ts
++++ b/e2e/clients/typescript/client.ts
+@@ -38,6 +38,15 @@ import { ExactCardanoScheme as ExactCardanoClientScheme } from "@x402/cardano/ex
+ import { toClientCardanoSigner } from "@x402/cardano";
+ import { toClientCantonSigner } from "@x402/canton";
+ import { ExactCantonScheme as ExactCantonClientScheme } from "@x402/canton/exact/client";
++import { ExactObyteScheme as ExactObyteClientScheme } from "@x402/obyte/exact/client";
++import {
++  DEFAULT_OBYTE_HUBS,
++  connectObyteHub,
++  parseObytePrivateKey,
++  toClientObyteSigner,
++  type ClientObyteSigner,
++  type ObyteNetwork,
++} from "@x402/obyte";
+ import { AccountAddress, buildBasicAccountSigner } from "@concordium/web-sdk";
+ import * as KeetaNet from "@keetanetwork/keetanet-client";
+ import { base58 } from "@scure/base";
+@@ -292,6 +301,15 @@ export async function createE2EClient(options: E2EClientOptions = {}): Promise<E
+     stellarSigner = createEd25519Signer(process.env.CLIENT_STELLAR_PRIVATE_KEY);
+   }
+ 
++  let obyteSigner: ClientObyteSigner | undefined;
++  if (wants("obyte") && process.env.CLIENT_OBYTE_PRIVATE_KEY) {
++    const obyteNetwork = resolveNetworkCaip2("obyte") as ObyteNetwork;
++    obyteSigner = toClientObyteSigner(
++      connectObyteHub(process.env.OBYTE_RPC_URL || DEFAULT_OBYTE_HUBS[obyteNetwork], obyteNetwork),
++      parseObytePrivateKey(process.env.CLIENT_OBYTE_PRIVATE_KEY),
++    );
++  }
++
+   let avmSigner: ReturnType<typeof toClientAvmSigner> | undefined;
+   if (wants("avm") && process.env.CLIENT_AVM_PRIVATE_KEY) {
+     avmSigner = toClientAvmSigner(process.env.CLIENT_AVM_PRIVATE_KEY);
+@@ -356,6 +374,12 @@ export async function createE2EClient(options: E2EClientOptions = {}): Promise<E
+       client: new ExactStellarScheme(stellarSigner),
+     });
+   }
++  if (obyteSigner) {
++    schemes.push({
++      network: networkCaip2Pattern("obyte"),
++      client: new ExactObyteClientScheme(obyteSigner),
++    });
++  }
+   if (avmSigner) {
+     schemes.push({
+       network: networkCaip2Pattern("avm"),
+diff --git a/e2e/clients/typescript/package.json b/e2e/clients/typescript/package.json
+index cdb4883..db154fd 100644
+--- a/e2e/clients/typescript/package.json
++++ b/e2e/clients/typescript/package.json
+@@ -36,6 +36,7 @@
+     "@x402/keeta": "workspace:*",
+     "@x402/mcp": "workspace:*",
+     "@x402/near": "workspace:*",
++    "@x402/obyte": "workspace:*",
+     "@x402/stellar": "workspace:*",
+     "@x402/svm": "workspace:*",
+     "@x402/tvm": "workspace:*",
+diff --git a/e2e/facilitators/typescript/index.ts b/e2e/facilitators/typescript/index.ts
+index e10ef8b..97a687f 100644
+--- a/e2e/facilitators/typescript/index.ts
++++ b/e2e/facilitators/typescript/index.ts
+@@ -126,6 +126,8 @@ import { baseSepolia, base } from "viem/chains";
+ import { resolveNetworkCaip2 } from "./catalog-network.js";
+ import { toFacilitatorCardanoSigner } from "@x402/cardano";
+ import { ExactCardanoScheme as ExactCardanoFacilitatorScheme } from "@x402/cardano/exact/facilitator";
++import { connectObyteHub, toObyteHub, type ObyteNetwork } from "@x402/obyte";
++import { ExactObyteScheme as ExactObyteFacilitatorScheme } from "@x402/obyte/exact/facilitator";
+ import { BazaarCatalog } from "./bazaar.js";
+ 
+ dotenv.config();
+@@ -149,6 +151,9 @@ const XRPL_RPC_URL = process.env.XRPL_RPC_URL;
+ const CCD_NETWORK = resolveNetworkCaip2("ccd");
+ const CARDANO_NETWORK = resolveNetworkCaip2("cardano");
+ const CARDANO_RPC_URL = process.env.CARDANO_RPC_URL;
++const OBYTE_NETWORK = resolveNetworkCaip2("obyte") as ObyteNetwork;
++// Keyless: in `exact` the payer signs and pays fees, the facilitator only publishes.
++const OBYTE_RPC_URL = process.env.OBYTE_RPC_URL;
+ const CCD_RPC_URL =
+   process.env.CCD_RPC_URL || getConcordiumGrpcUrl(CCD_NETWORK as Network);
+ const EVM_RPC_URL = process.env.EVM_RPC_URL;
+@@ -212,6 +217,7 @@ const hasFacilitatorCredential = [
+     process.env.FACILITATOR_CCD_ADDRESS,
+   process.env.XRPL_NETWORK, // keyless XRPL facilitator
+   process.env.BLOCKFROST_PROJECT_ID, // Cardano runs provider-only without a mnemonic
++  OBYTE_RPC_URL, // keyless Obyte facilitator
+   process.env.FACILITATOR_CANTON_PARTY && process.env.CANTON_PARTICIPANT_URL,
+ ].some(Boolean);
+ 
+@@ -858,6 +864,19 @@ if (concordiumSigner) {
+     new ExactConcordiumScheme({ signer: concordiumSigner }),
+   );
+ }
++if (OBYTE_RPC_URL) {
++  facilitator.register(
++    OBYTE_NETWORK as Network,
++    new ExactObyteFacilitatorScheme({
++      hubs: {
++        [OBYTE_NETWORK]: toObyteHub(
++          connectObyteHub(OBYTE_RPC_URL, OBYTE_NETWORK),
++        ),
++      },
++      finality: process.env.OBYTE_FINALITY === "accepted" ? "accepted" : "stable",
++    }),
++  );
++}
+ if (cardanoSigner) {
+   facilitator.register(
+     CARDANO_NETWORK as Network,
+@@ -1224,6 +1243,7 @@ app.get("/health", (req, res) => {
+     xrplNetwork: process.env.XRPL_NETWORK ? XRPL_NETWORK : "(not configured)",
+     ccdNetwork: concordiumSigner ? CCD_NETWORK : "(not configured)",
+     cardanoNetwork: cardanoSigner ? CARDANO_NETWORK : "(not configured)",
++    obyteNetwork: OBYTE_RPC_URL ? OBYTE_NETWORK : "(not configured)",
+     facilitator: "typescript",
+     version: "2.0.0",
+     extensions: [BAZAAR.key],
+diff --git a/e2e/facilitators/typescript/package.json b/e2e/facilitators/typescript/package.json
+index 658f5ad..45d638c 100644
+--- a/e2e/facilitators/typescript/package.json
++++ b/e2e/facilitators/typescript/package.json
+@@ -29,6 +29,7 @@
+     "@x402/hedera": "workspace:*",
+     "@x402/keeta": "workspace:*",
+     "@x402/near": "workspace:*",
++    "@x402/obyte": "workspace:*",
+     "@x402/stellar": "workspace:*",
+     "@x402/svm": "workspace:*",
+     "@x402/tvm": "workspace:*",
+diff --git a/e2e/package.json b/e2e/package.json
+index 025c38b..0b06e16 100644
+--- a/e2e/package.json
++++ b/e2e/package.json
+@@ -43,6 +43,7 @@
+     "@x402/hedera": "workspace:*",
+     "@x402/keeta": "workspace:*",
+     "@x402/near": "workspace:*",
++    "@x402/obyte": "workspace:*",
+     "@x402/stellar": "workspace:*",
+     "@x402/svm": "workspace:*",
+     "@x402/tvm": "workspace:*",
+diff --git a/e2e/servers/typescript/config.ts b/e2e/servers/typescript/config.ts
+index e1333f3..5293da2 100644
+--- a/e2e/servers/typescript/config.ts
++++ b/e2e/servers/typescript/config.ts
+@@ -20,6 +20,7 @@ import { ExactConcordiumScheme } from "@x402/concordium/exact/server";
+ import { ExactCardanoScheme } from "@x402/cardano/exact/server";
+ import { toMasumiSellerSigner } from "@x402/cardano";
+ import { ExactCantonScheme } from "@x402/canton/exact/server";
++import { ExactObyteScheme } from "@x402/obyte/exact/server";
+ import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
+ import {
+   declareEip2612GasSponsoringExtension,
+@@ -191,6 +192,13 @@ async function registerFamilySchemes(
+     case "xrpl":
+       server.register(pattern, new ExactXrplScheme());
+       return;
++    case "obyte": {
++      // The per-request offer binding is an HMAC under the seller's secret.
++      const secret = process.env.SERVER_OBYTE_BINDING_SECRET;
++      if (!secret) break;
++      server.register(pattern, new ExactObyteScheme({ sellerId: "x402-e2e", secret }));
++      return;
++    }
+   }
+ }
+ 
+diff --git a/e2e/servers/typescript/package.json b/e2e/servers/typescript/package.json
+index 1a79ea1..63e75ff 100644
+--- a/e2e/servers/typescript/package.json
++++ b/e2e/servers/typescript/package.json
+@@ -26,6 +26,7 @@
+     "@x402/keeta": "workspace:*",
+     "@x402/mcp": "workspace:*",
+     "@x402/near": "workspace:*",
++    "@x402/obyte": "workspace:*",
+     "@x402/stellar": "workspace:*",
+     "@x402/svm": "workspace:*",
+     "@x402/tvm": "workspace:*",
+diff --git a/typescript/.changeset/config.json b/typescript/.changeset/config.json
+index dff9b61..be00656 100644
+--- a/typescript/.changeset/config.json
++++ b/typescript/.changeset/config.json
+@@ -18,6 +18,7 @@
+       "@x402/tvm",
+       "@x402/keeta",
+       "@x402/near",
++      "@x402/obyte",
+       "@x402/concordium",
+       "@x402/xrpl",
+       "@x402/canton",
+diff --git a/typescript/package.json b/typescript/package.json
+index 5c0086c..80a4415 100644
+--- a/typescript/package.json
++++ b/typescript/package.json
+@@ -17,7 +17,7 @@
+     "lint:check": "turbo run lint:check",
+     "format:check": "turbo run format:check",
+     "test": "turbo run test",
+-    "test:integration": "pnpm --filter @x402/core --filter @x402/evm --filter @x402/svm --filter @x402/avm --filter @x402/aptos --filter @x402/casper --filter @x402/canton --filter @x402/hedera --filter @x402/keeta --filter @x402/near --filter @x402/stellar --filter @x402/xrpl --filter @x402/cardano test:integration",
++    "test:integration": "pnpm --filter @x402/core --filter @x402/evm --filter @x402/svm --filter @x402/avm --filter @x402/aptos --filter @x402/casper --filter @x402/canton --filter @x402/hedera --filter @x402/keeta --filter @x402/near --filter @x402/stellar --filter @x402/xrpl --filter @x402/cardano --filter @x402/obyte test:integration",
+     "test:all": "pnpm test && pnpm test:integration",
+     "verify:exports": "node scripts/verify-package-exports.mjs"
+   },

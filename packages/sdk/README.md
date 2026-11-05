@@ -65,6 +65,20 @@ app.use(
 );
 ```
 
+Channel payments: register `ObyteBatchServer` the same way, with
+`minChannelTimeoutSeconds` equal to the facilitator's
+`MIN_CHANNEL_TIMEOUT_SECONDS`, and accept `scheme: 'batch-settlement'`.
+
+## Browser clients (CORS)
+
+```ts
+const paywall = new ObytePaywall({ ...options, cors: { origins: ['https://app.example'] } });
+app.use(paywall.preflight()); // answers OPTIONS without payment
+```
+
+The 402 then carries `Access-Control-Allow-Origin` and exposes
+`PAYMENT-REQUIRED` / `PAYMENT-RESPONSE`; preflights allow `PAYMENT-SIGNATURE`.
+
 ## Buy: `payingFetch` with budgets
 
 ```ts
