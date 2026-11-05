@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { pino, type DestinationStream, type Level, type Logger, type LoggerOptions } from 'pino';
 
 /**
@@ -129,7 +130,10 @@ export interface CreateLoggerOptions {
   moduleLevels?: Readonly<Record<string, Level>>;
   /** Service name written into every line (`service` field). */
   service?: string;
-  /** Pretty-print for local development. */
+  /**
+   * Pretty-print for local development. Needs the optional `pino-pretty`
+   * package; without it the logger falls back to JSON and says so once.
+   */
   pretty?: boolean;
   /** Custom destination (tests, files). Ignored when `pretty` is set. */
   destination?: DestinationStream;
@@ -149,15 +153,28 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
     mixin: () => ({ ...getLogContext() }),
   };
 
-  const logger =
-    options.pretty === true
-      ? pino({ ...pinoOptions, transport: { target: 'pino-pretty', options: { colorize: true } } })
-      : options.destination === undefined
-        ? pino(pinoOptions)
-        : pino(pinoOptions, options.destination);
+  const pretty = options.pretty === true && prettyAvailable();
+  const logger = pretty
+    ? pino({ ...pinoOptions, transport: { target: 'pino-pretty', options: { colorize: true } } })
+    : options.destination === undefined
+      ? pino(pinoOptions)
+      : pino(pinoOptions, options.destination);
+  if (options.pretty === true && !pretty) {
+    logger.warn('pretty logs need the pino-pretty package (npm i pino-pretty); writing JSON');
+  }
 
   moduleLevelsByLogger.set(logger, options.moduleLevels ?? {});
   return logger;
+}
+
+/** Whether pino can load the `pino-pretty` transport (an optional package). */
+function prettyAvailable(): boolean {
+  try {
+    createRequire(import.meta.url).resolve('pino-pretty');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function redacted(value: unknown): string {

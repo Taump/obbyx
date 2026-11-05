@@ -1,5 +1,14 @@
 # @obbyx/obyte
 
+## 0.1.2
+
+### Patch Changes
+
+- Fix `error: unable to determine transport target for "pino-pretty"` when the CLI runs in a terminal after `npm i @obbyx/cli`.
+
+  - cli: depends on `pino-pretty` and builds the formatter itself; its logs always go to stderr (stdout carries the command's result).
+  - obyte: `createLogger({ pretty: true })` / `LOG_PRETTY=1` falls back to JSON with one warning when the optional `pino-pretty` package is not installed, instead of throwing.
+
 ## 0.1.1
 
 ### Patch Changes

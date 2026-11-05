@@ -1,6 +1,6 @@
 {
   "name": "@obbyx/obyte",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Obyte primitives for x402: networks (CAIP-2), BigInt amounts, unit and signed-message validation, wallet, logging",
   "keywords": [
     "obyte",
@@ -85,5 +85,13 @@
   },
   "devDependencies": {
     "pino-pretty": "^13.2.0"
+  },
+  "peerDependencies": {
+    "pino-pretty": ">=13"
+  },
+  "peerDependenciesMeta": {
+    "pino-pretty": {
+      "optional": true
+    }
   }
 }

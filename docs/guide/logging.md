@@ -43,7 +43,7 @@ and the headers `payment-signature`, `x-payment`, `authorization`, `cookie`,
 
 ## Streams
 
-1. **Technical log** — JSON lines to stdout (pretty with `LOG_PRETTY=1`).
+1. **Technical log** — JSON lines to stdout (pretty with `LOG_PRETTY=1`, which needs the optional `pino-pretty` package; without it the log stays JSON and says so once). The CLI logs to stderr.
 2. **Payment event journal** — append-only `events` table of the facilitator:
    `exact` state transitions, `voucher_pending` / `voucher_committed` /
    `voucher_refused` / `ack_timeout`, watcher connections and acks, hub

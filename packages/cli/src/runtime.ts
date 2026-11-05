@@ -16,6 +16,7 @@ import {
 import { type Logger, createLogger } from '@obbyx/obyte/logger';
 import { obbyxHome } from '@obbyx/obyte/wallet';
 import { CoinReservations, ReservingComposer } from '@obbyx/x402-obyte';
+import pinoPretty from 'pino-pretty';
 
 /** Helpers shared by the commands: network/hub, logger, argument parsing, output. */
 export function printPayment(
@@ -50,10 +51,17 @@ export function printPayment(
   }
 }
 
+/**
+ * Logs of the CLI go to stderr (stdout carries the command's result, e.g. the
+ * paid API's answer), human-readable in a terminal. The formatter is built
+ * here from the CLI's own dependency, not loaded by name in a worker.
+ */
 export function cliLogger(): Logger {
   return createLogger({
     level: (process.env['LOG_LEVEL'] as never) ?? 'warn',
-    pretty: process.stderr.isTTY,
+    destination: process.stderr.isTTY
+      ? pinoPretty({ colorize: true, destination: 2, sync: true })
+      : process.stderr,
   });
 }
 
