@@ -1,5 +1,13 @@
 # @obbyx/cli
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [0284d2b]
+  - @obbyx/sdk@0.2.0
+  - @obbyx/x402-obyte@0.2.1
+
 ## 0.1.1
 
 ### Patch Changes
