@@ -1,6 +1,6 @@
 {
   "name": "@obbyx/obyte",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Obyte primitives for x402: networks (CAIP-2), BigInt amounts, unit and signed-message validation, wallet, logging",
   "keywords": [
     "obyte",

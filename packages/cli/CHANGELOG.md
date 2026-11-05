@@ -1,5 +1,18 @@
 # @obbyx/cli
 
+## 0.1.3
+
+### Patch Changes
+
+- af8866b: Internal refactoring without behaviour changes: unit validation, ledger checks, the paywall, `payingFetch`, both client mechanisms, the channel facilitator and the CLI `doctor` / `channel` / `pay` commands are split into small named steps (same checks, same order, same reason codes).
+
+  - x402-obyte: new `parseBalances` reads `light/get_balances` with a schema (a malformed hub answer is `undefined`, never half-read); `obbyx balance`, `obbyx doctor` and the watcher use it.
+
+- Updated dependencies [af8866b]
+  - @obbyx/obyte@0.1.1
+  - @obbyx/x402-obyte@0.2.2
+  - @obbyx/sdk@0.2.1
+
 ## 0.1.2
 
 ### Patch Changes
