@@ -2,10 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { decidePaymentId } from '../src/seller/payment-identifier.js';
 import { ObyteExactServer } from '../src/seller/x402-server.js';
-import { Writable } from 'node:stream';
-import { createLogger } from '@obbyx/obyte/logger';
+import { silentLogger } from '../../obyte/test/helpers.js';
 
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 
 describe('ConsumedProofsStore', () => {
   it('one proof, one operation: transitions are compare-and-set', () => {

@@ -1,6 +1,5 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Writable } from 'node:stream';
 import express from 'express';
 import {
   HTTPFacilitatorClient,
@@ -14,7 +13,7 @@ import { BatchObyteClient, ClientChannelStore, type SqliteBatchStore } from '@ob
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WatcherStore } from '../../../apps/watcher/src/storage/store.js';
 import type { FacilitatorLink } from '../../../apps/watcher/src/facilitator/link.js';
-import { addressOf, testKey } from '../../obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { FakeHub } from '../../x402-obyte/test/fake-hub.js';
 import { type ChannelStack, hubClient, startChannelStack, until } from './channel-stack.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
@@ -29,9 +28,7 @@ const seller = addressOf(sellerKey);
 const params = { addressA: seller, addressB: client, asset: 'base', salt: 'e2e', timeout: 7200 };
 const AA = channelAddress(params);
 const AA_KEY = `${NET.caip2}:aa:${AA}`;
-const silent = process.env['E2E_LOG']
-  ? createLogger({ level: 'debug' })
-  : createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = process.env['E2E_LOG'] ? createLogger({ level: 'debug' }) : silentLogger();
 
 let hub: FakeHub;
 let stack: ChannelStack;

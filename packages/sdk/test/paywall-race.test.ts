@@ -1,5 +1,4 @@
 import type { AddressInfo } from 'node:net';
-import { Writable } from 'node:stream';
 import express from 'express';
 import {
   type FacilitatorClient,
@@ -7,15 +6,14 @@ import {
   encodePaymentSignatureHeader,
 } from '@x402/core/http';
 import type { PaymentRequirements, SettleResponse } from '@x402/core/types';
-import { createLogger } from '@obbyx/obyte/logger';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { addressOf, testKey } from '../../obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { ObytePaywall } from '../src/seller/paywall.js';
 
 const NET = 'obyte:testnet';
 const seller = addressOf(testKey('seller'));
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const UNIT = 'U'.repeat(43) + '=';
 
 /** A: slow success. B (same payment, concurrent): a refusal before reaching the network. */

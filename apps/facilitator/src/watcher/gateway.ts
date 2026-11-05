@@ -93,7 +93,7 @@ export class WsWatcherGateway implements WatcherGateway {
     let waiter: (() => void) | undefined;
     const acked = new Promise<'acked'>((resolve) => {
       waiter = () => resolve('acked');
-      this.onAck(commitment.seq, waiter);
+      this.whenAcked(commitment.seq, waiter);
     });
     this.send(s.ws, toMessage(commitment));
     let timer: NodeJS.Timeout | undefined;
@@ -136,33 +136,9 @@ export class WsWatcherGateway implements WatcherGateway {
         }
         if (msg.type === 'hello') {
           if (session !== undefined) return this.fail(ws, 'already logged in');
-          if (!isObyteNetwork(msg.network) || !this.options.networks.includes(msg.network)) {
-            return this.fail(ws, 'network not served');
-          }
-          const login = verifyWatcherLogin(msg.login, {
-            challenge,
-            network: getNetwork(msg.network),
-            now: Math.floor(this.now() / 1000),
-          });
-          if (!login.ok) return this.fail(ws, login.message);
+          session = this.login(ws, msg, challenge);
+          if (session === undefined) return;
           clearTimeout(loginTimer);
-          session = {
-            ws,
-            seller: login.value,
-            network: msg.network,
-            lastSeen: this.now(),
-            bytesBalance: BigInt(msg.bytesBalance),
-            closing: closingOf(msg),
-          };
-          const key = sessionKey(msg.network, login.value);
-          this.sessions.get(key)?.ws.close(4000, 'replaced by a new watcher session');
-          this.sessions.set(key, session);
-          this.send(ws, { type: 'welcome', seller: login.value, network: msg.network });
-          this.log.info(
-            { seller: login.value, network: msg.network, cursor: msg.cursor },
-            'watcher connected',
-          );
-          void this.emit(msg.network, login.value, 'watcher_connected', { cursor: msg.cursor });
           await this.replay(session, msg.cursor);
           return;
         }
@@ -173,20 +149,7 @@ export class WsWatcherGateway implements WatcherGateway {
           session.closing = closingOf(msg);
           return;
         }
-        // ack: durable on the watcher → committed here (idempotent).
-        // Ownership is enforced atomically inside commit (seller + network).
-        const committed = await this.options.store.commit(msg.seq, {
-          payTo: session.seller,
-          network: session.network,
-        });
-        if (committed === undefined) {
-          this.log.warn({ seq: msg.seq }, 'ack for an unknown or foreign voucher ignored');
-          return;
-        }
-        this.log.debug({ seq: msg.seq, seller: session.seller }, 'watcher ack');
-        void this.emit(session.network, session.seller, 'watcher_ack', { seq: msg.seq });
-        for (const resolve of this.waiters.get(msg.seq) ?? []) resolve();
-        this.waiters.delete(msg.seq);
+        await this.commitAcked(session, msg.seq);
       })().catch((err: unknown) => this.log.error({ err }, 'watcher message handling failed'));
     });
 
@@ -199,6 +162,68 @@ export class WsWatcherGateway implements WatcherGateway {
         void this.emit(session.network, session.seller, 'watcher_disconnected', {});
       }
     });
+  }
+
+  /**
+   * Verifies the signed login against our challenge and opens the session; a
+   * newer session of the same seller replaces the older one. Undefined (and
+   * the socket failed) when the login is refused.
+   */
+  private login(
+    ws: WebSocket,
+    msg: Extract<ClientMessage, { type: 'hello' }>,
+    challenge: string,
+  ): Session | undefined {
+    if (!isObyteNetwork(msg.network) || !this.options.networks.includes(msg.network)) {
+      this.fail(ws, 'network not served');
+      return undefined;
+    }
+    const login = verifyWatcherLogin(msg.login, {
+      challenge,
+      network: getNetwork(msg.network),
+      now: Math.floor(this.now() / 1000),
+    });
+    if (!login.ok) {
+      this.fail(ws, login.message);
+      return undefined;
+    }
+    const session: Session = {
+      ws,
+      seller: login.value,
+      network: msg.network,
+      lastSeen: this.now(),
+      bytesBalance: BigInt(msg.bytesBalance),
+      closing: closingOf(msg),
+    };
+    const key = sessionKey(msg.network, login.value);
+    this.sessions.get(key)?.ws.close(4000, 'replaced by a new watcher session');
+    this.sessions.set(key, session);
+    this.send(ws, { type: 'welcome', seller: login.value, network: msg.network });
+    this.log.info(
+      { seller: login.value, network: msg.network, cursor: msg.cursor },
+      'watcher connected',
+    );
+    void this.emit(msg.network, login.value, 'watcher_connected', { cursor: msg.cursor });
+    return session;
+  }
+
+  /**
+   * ack: the voucher is durable on the watcher → committed here (idempotent).
+   * Ownership is enforced atomically inside commit (seller + network).
+   */
+  private async commitAcked(session: Session, seq: number): Promise<void> {
+    const committed = await this.options.store.commit(seq, {
+      payTo: session.seller,
+      network: session.network,
+    });
+    if (committed === undefined) {
+      this.log.warn({ seq }, 'ack for an unknown or foreign voucher ignored');
+      return;
+    }
+    this.log.debug({ seq, seller: session.seller }, 'watcher ack');
+    void this.emit(session.network, session.seller, 'watcher_ack', { seq });
+    for (const resolve of this.waiters.get(seq) ?? []) resolve();
+    this.waiters.delete(seq);
   }
 
   private async emit(
@@ -230,7 +255,8 @@ export class WsWatcherGateway implements WatcherGateway {
     }
   }
 
-  private onAck(seq: number, resolve: () => void): void {
+  /** Registers a callback for the watcher's ack of a journal entry. */
+  private whenAcked(seq: number, resolve: () => void): void {
     const set = this.waiters.get(seq) ?? new Set();
     set.add(resolve);
     this.waiters.set(seq, set);

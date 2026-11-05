@@ -1,6 +1,5 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Writable } from 'node:stream';
 import express from 'express';
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import { wrapFetchWithPayment, x402Client } from '@x402/fetch';
@@ -11,10 +10,9 @@ import {
   encodePaymentSignatureHeader,
 } from '@x402/core/http';
 import { OBYTE_NETWORKS, channelAddress, channelDefinition } from '@obbyx/obyte';
-import { createLogger } from '@obbyx/obyte/logger';
 import { BatchObyteClient, ClientChannelStore } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { addressOf, testKey } from '../../obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { FakeHub } from '../../x402-obyte/test/fake-hub.js';
 import { type ChannelStack, hubClient, startChannelStack } from './channel-stack.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
@@ -32,7 +30,7 @@ const sellerKey = testKey('seller');
 const seller = addressOf(sellerKey);
 const params = { addressA: seller, addressB: client, asset: 'base', salt: 'x402', timeout: 7200 };
 const AA = channelAddress(params);
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 
 let hub: FakeHub;
 let stack: ChannelStack;

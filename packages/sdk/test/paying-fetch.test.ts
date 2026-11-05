@@ -1,5 +1,4 @@
 import type { AddressInfo } from 'node:net';
-import { Writable } from 'node:stream';
 import express from 'express';
 import {
   decodePaymentSignatureHeader,
@@ -8,14 +7,14 @@ import {
 } from '@x402/core/http';
 import type { PaymentRequirements } from '@x402/core/types';
 import { ObbyxError } from '@obbyx/obyte';
-import { createLogger } from '@obbyx/obyte/logger';
 import type { BatchObyteClient, ExactObyteClient } from '@obbyx/x402-obyte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SpendingBudget } from '../src/client/budget.js';
 import { payingFetch } from '../src/client/paying-fetch.js';
+import { silentLogger } from '../../obyte/test/helpers.js';
 
 const NET = 'obyte:testnet';
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const offer = (scheme: string): PaymentRequirements => ({
   scheme,
   network: NET,

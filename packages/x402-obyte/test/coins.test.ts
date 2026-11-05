@@ -1,6 +1,4 @@
-import { Writable } from 'node:stream';
 import obyte from 'obyte';
-import { createLogger } from '@obbyx/obyte/logger';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   CoinReservations,
@@ -8,7 +6,14 @@ import {
   selectCoins,
   unspentOutputs,
 } from '../src/coins/index.js';
-import { HASH_A, HASH_B, HASH_C, addressOf, testKey } from '../../obyte/test/helpers.js';
+import {
+  HASH_A,
+  HASH_B,
+  HASH_C,
+  addressOf,
+  testKey,
+  silentLogger,
+} from '../../obyte/test/helpers.js';
 import { FakeHub } from './fake-hub.js';
 
 const NET = 'obyte:testnet';
@@ -16,7 +21,7 @@ const key = testKey('payer');
 const me = addressOf(key);
 const other = addressOf(testKey('other'));
 const seller = addressOf(testKey('seller'));
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const U = (c: string) => c.repeat(43) + '=';
 
 describe('unspentOutputs / selectCoins', () => {

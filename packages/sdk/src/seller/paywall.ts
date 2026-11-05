@@ -74,6 +74,32 @@ export interface PaidResult {
 
 export type PaidHandler = (req: Request) => Promise<PaidResult> | PaidResult;
 
+/** A route's price, resolved: asset and atomic amount. */
+type Price = { readonly asset: string; readonly amount: string };
+
+/** One call of a paid route. */
+interface PaidCall {
+  readonly req: Request;
+  readonly res: Response;
+  readonly route: PaidRouteOptions;
+  readonly price: Price;
+  readonly handler: PaidHandler;
+}
+
+/** A paid call whose payment matches this offer and was bound to this request. */
+interface Payment extends PaidCall {
+  readonly payload: PaymentPayload;
+  readonly accepted: PaymentRequirements;
+  /** Unit hash (exact) or voucher hash (batch). */
+  readonly proofId: string;
+  /** Proof key in the consumed-proofs store (network-scoped). */
+  readonly key: string;
+  readonly binding: string;
+  readonly validUntil: number;
+  readonly facts: RequestFacts;
+  readonly terms: PaymentTerms;
+}
+
 export interface RoutePrice {
   /** Atomic units as a decimal string. */
   readonly amount: string;
@@ -168,38 +194,53 @@ export class ObytePaywall {
   paid(route: PaidRouteOptions, handler: PaidHandler): RequestHandler {
     const asset = route.price.asset ?? 'base';
     if (!isAssetId(asset)) throw new Error(`Invalid asset ${asset}`);
-    const amount = parseAmount(route.price.amount).toString();
+    const price = { asset, amount: parseAmount(route.price.amount).toString() };
     return (req: Request, res: Response, next: NextFunction) => {
       const requestId = String(req.get('x-request-id') ?? cryptoId());
       withLogContext({ requestId, network: this.options.network }, () =>
-        this.handle(req, res, route, { asset, amount }, handler).catch(next),
+        this.handle({ req, res, route, price, handler }).catch(next),
       );
     };
   }
 
-  private async handle(
-    req: Request,
-    res: Response,
-    route: PaidRouteOptions,
-    price: { asset: string; amount: string },
-    handler: PaidHandler,
-  ): Promise<void> {
+  private async handle(call: PaidCall): Promise<void> {
+    const { req, res } = call;
     exposePaymentHeaders(res);
     if (this.options.cors !== undefined) allowOrigin(req, res, this.options.cors);
     res.setHeader('Cache-Control', 'private, no-store');
     const header = req.get('payment-signature');
-    if (header === undefined) return this.paymentRequired(req, res, route, price);
+    if (header === undefined) return this.paymentRequired(call);
 
+    const parsed = this.parsePayment(call, header);
+    if (parsed.kind === 'bad_header') {
+      res.status(400).json({ error: 'invalid_payment_header' });
+      return;
+    }
+    if (parsed.kind === 'refused') return this.paymentRequired(call, parsed.error);
+    const payment = parsed.payment;
+    await withLogContext({ binding: payment.binding, proofId: payment.proofId }, () =>
+      this.process(payment),
+    );
+  }
+
+  /**
+   * Decodes the payment and checks it against THIS offer: our scheme, network,
+   * price and payee, and a binding we issued for this very request.
+   */
+  private parsePayment(
+    call: PaidCall,
+    header: string,
+  ):
+    { kind: 'ok'; payment: Payment } | { kind: 'bad_header' } | { kind: 'refused'; error: string } {
     let payload: PaymentPayload;
     try {
       payload = decodePaymentSignatureHeader(header);
     } catch {
-      res.status(400).json({ error: 'invalid_payment_header' });
-      return;
+      return { kind: 'bad_header' };
     }
+    const { route, price } = call;
     const accepted = payload.accepted;
     const scheme = accepted?.scheme as PaywallScheme | undefined;
-    const offered = this.schemesFor(route);
     const extra =
       scheme === EXACT_SCHEME
         ? exactExtraSchema.safeParse(accepted?.extra)
@@ -210,152 +251,169 @@ export class ObytePaywall {
     if (
       payload.x402Version !== 2 ||
       scheme === undefined ||
-      !offered.includes(scheme) ||
+      !this.schemesFor(route).includes(scheme) ||
       accepted?.network !== this.options.network ||
       accepted.asset !== price.asset ||
       accepted.amount !== price.amount ||
       accepted.payTo !== this.options.payTo ||
-      extra === undefined ||
-      !extra.success ||
+      extra?.success !== true ||
       proofId === undefined ||
       (scheme === BATCH_SCHEME &&
         (extra.data as { minTimeout?: number }).minTimeout !==
           this.options.batch?.minChannelTimeoutSeconds)
     ) {
-      return this.paymentRequired(req, res, route, price, 'invalid_payment_requirements');
+      return { kind: 'refused', error: 'invalid_payment_requirements' };
     }
-    const facts = this.requestFacts(req, route);
+    const facts = this.requestFacts(call.req, route);
     const terms = this.terms(price);
-    const expected = offerBinding(this.options, scheme, extra.data, facts, terms);
-    if (!bindingsEqual(expected, extra.data.binding)) {
+    if (
+      !bindingsEqual(
+        offerBinding(this.options, scheme, extra.data, facts, terms),
+        extra.data.binding,
+      )
+    ) {
       this.log.warn({ proofId }, 'payment is bound to another operation or a forged quote');
-      return this.paymentRequired(req, res, route, price, 'invalid_binding');
+      return { kind: 'refused', error: 'invalid_binding' };
     }
-    const binding = extra.data.binding;
-    const key = networkKey(
-      getNetwork(this.options.network),
-      scheme === EXACT_SCHEME ? 'unit' : 'voucher',
-      proofId,
-    );
+    return {
+      kind: 'ok',
+      payment: {
+        ...call,
+        payload,
+        accepted,
+        proofId,
+        binding: extra.data.binding,
+        validUntil: extra.data.validUntil,
+        facts,
+        terms,
+        key: networkKey(
+          getNetwork(this.options.network),
+          scheme === EXACT_SCHEME ? 'unit' : 'voucher',
+          proofId,
+        ),
+      },
+    };
+  }
 
-    await withLogContext({ binding, proofId }, async () => {
-      const store = this.options.store;
-      const begun = store.begin(key, binding);
-      const { created } = begun;
-      let { record } = begun;
-      // A proof left in `serving` by a crashed process is recovered after the lease.
-      if (
-        record.state === 'serving' &&
-        store.reclaimStale(key, this.options.servingLeaseSeconds ?? DEFAULT_SERVING_LEASE_SECONDS)
-      ) {
-        this.log.warn('recovered a payment stuck in serving (lease expired)');
-        record = store.get(key) ?? record;
-      }
-      if (!bindingsEqual(record.binding, binding)) {
-        res.setHeader('PAYMENT-RESPONSE', this.refusal('invalid_payment_reused'));
-        res.status(402).json({ error: 'invalid_payment_reused' });
+  /** Registers the proof, then continues from its state: one payment, one operation. */
+  private async process(payment: Payment): Promise<void> {
+    const { res, key, binding } = payment;
+    const store = this.options.store;
+    const begun = store.begin(key, binding);
+    const { created } = begun;
+    let { record } = begun;
+    // A proof left in `serving` by a crashed process is recovered after the lease.
+    if (
+      record.state === 'serving' &&
+      store.reclaimStale(key, this.options.servingLeaseSeconds ?? DEFAULT_SERVING_LEASE_SECONDS)
+    ) {
+      this.log.warn('recovered a payment stuck in serving (lease expired)');
+      record = store.get(key) ?? record;
+    }
+    if (!bindingsEqual(record.binding, binding)) {
+      res.setHeader('PAYMENT-RESPONSE', this.refusal('invalid_payment_reused'));
+      res.status(402).json({ error: 'invalid_payment_reused' });
+      return;
+    }
+    if (this.paymentIdentifierAnswered(payment, created)) return;
+    if (created && payment.validUntil < this.now()) {
+      store.forget(key, 'settling');
+      return this.paymentRequired(payment, 'quote_expired');
+    }
+    switch (record.state) {
+      case 'served':
+        this.log.info('replaying stored response for a repeated operation');
+        return this.send(res, record.response, record.paymentResponse);
+      case 'serving':
+        if (record.paymentResponse !== null)
+          res.setHeader('PAYMENT-RESPONSE', record.paymentResponse);
+        res.status(409).json({ error: 'payment_in_progress' });
         return;
-      }
-      // x402 payment-identifier: one client id = one operation. Decided AFTER
-      // the proof row exists, so a concurrent request always sees this proof
-      // as in progress (never as "absent") and cannot take the id over.
-      if (this.options.paymentIdentifier !== undefined) {
-        const decision = decidePaymentId(store, {
-          paymentId: paymentIdOf(payload),
-          required: this.options.paymentIdentifier.required,
-          scopeId: (id) => `${this.options.sellerId}:${id}`,
-          fingerprint: operationFingerprint(facts, terms),
-          proofKey: key,
-        });
-        if (decision.kind !== 'proceed' && created) store.forget(key, 'settling');
-        if (decision.kind === 'reject') {
-          res.status(decision.status).json({ error: decision.error });
-          return;
-        }
-        if (decision.kind === 'replay') {
-          const original = store.get(decision.proofKey);
-          this.log.info('payment-identifier repeat: stored response, new payment NOT settled');
-          return this.send(res, original?.response ?? null, original?.paymentResponse ?? null);
-        }
-      }
-      if (created && extra.data.validUntil < this.now()) {
-        store.forget(key, 'settling');
-        return this.paymentRequired(req, res, route, price, 'quote_expired');
-      }
-      switch (record.state) {
-        case 'served':
-          this.log.info('replaying stored response for a repeated operation');
-          return this.send(res, record.response, record.paymentResponse);
-        case 'serving':
-          if (record.paymentResponse !== null)
-            res.setHeader('PAYMENT-RESPONSE', record.paymentResponse);
-          res.status(409).json({ error: 'payment_in_progress' });
-          return;
-        case 'failed':
-          res.status(402).json({ error: 'payment_failed' });
-          return;
-        case 'paid_not_served':
-          return this.serve(req, res, key, record.paymentResponse, handler);
-        case 'awaiting_settle':
-          return this.settleServed(req, res, route, price, key, payload, accepted);
-        case 'settling':
-          break;
-      }
-
-      if (route.flow === 'authorization') {
-        return this.authorize(req, res, route, price, key, payload, accepted, handler);
-      }
-
-      const settled = await this.settleWithWait(payload, accepted);
-      const paymentResponse = encodePaymentResponseHeader(settled);
-      if (settled.success) {
-        this.log.info({ transaction: settled.transaction }, 'payment settled');
-        if (store.markSettled(key, binding, paymentResponse) === 'served') {
-          // A concurrent request with the same payment already served it.
-          const served = store.get(key);
-          return this.send(res, served?.response ?? null, served?.paymentResponse ?? null);
-        }
-        return this.serve(req, res, key, paymentResponse, handler);
-      }
-      if (settled.errorReason === 'settlement_pending') {
-        this.log.info(
-          { transaction: settled.transaction },
-          'settlement pending; client should retry with the same payment',
-        );
-        res.setHeader('PAYMENT-RESPONSE', paymentResponse);
-        res.setHeader('Retry-After', '5');
-        res.status(402).json({ error: 'settlement_pending', transaction: settled.transaction });
+      case 'failed':
+        res.status(402).json({ error: 'payment_failed' });
         return;
-      }
-      if (settled.transaction === '') {
-        // Rejected before reaching the network: the proof was not consumed.
-        // Only the request that created the row removes it: a concurrent
-        // request with the same payment may be settling it right now.
-        if (created) store.forget(key, 'settling');
-      } else {
-        store.transition(key, 'settling', 'failed', { paymentResponse });
-      }
-      this.log.warn({ reason: settled.errorReason }, 'payment failed');
-      res.setHeader('PAYMENT-RESPONSE', paymentResponse);
-      return this.paymentRequired(req, res, route, price, settled.errorReason ?? 'payment_failed');
+      case 'paid_not_served':
+        return this.serve(payment, record.paymentResponse);
+      case 'awaiting_settle':
+        return this.settleServed(payment);
+      case 'settling':
+        return payment.route.flow === 'authorization'
+          ? this.authorize(payment)
+          : this.settleUpfront(payment, created);
+    }
+  }
+
+  /**
+   * x402 payment-identifier: one client id = one operation. Decided AFTER the
+   * proof row exists, so a concurrent request always sees this proof as in
+   * progress (never as "absent") and cannot take the id over. True when the
+   * response was already sent (refused, or the stored response replayed).
+   */
+  private paymentIdentifierAnswered(payment: Payment, created: boolean): boolean {
+    const declared = this.options.paymentIdentifier;
+    if (declared === undefined) return false;
+    const store = this.options.store;
+    const decision = decidePaymentId(store, {
+      paymentId: paymentIdOf(payment.payload),
+      required: declared.required,
+      scopeId: (id) => `${this.options.sellerId}:${id}`,
+      fingerprint: operationFingerprint(payment.facts, payment.terms),
+      proofKey: payment.key,
     });
+    if (decision.kind === 'proceed') return false;
+    if (created) store.forget(payment.key, 'settling');
+    if (decision.kind === 'reject') {
+      payment.res.status(decision.status).json({ error: decision.error });
+      return true;
+    }
+    const original = store.get(decision.proofKey);
+    this.log.info('payment-identifier repeat: stored response, new payment NOT settled');
+    this.send(payment.res, original?.response ?? null, original?.paymentResponse ?? null);
+    return true;
+  }
+
+  /** upfront flow: settle to finality, then run the handler once. */
+  private async settleUpfront(payment: Payment, created: boolean): Promise<void> {
+    const { res, key } = payment;
+    const store = this.options.store;
+    const settled = await this.settleWithWait(payment.payload, payment.accepted);
+    const paymentResponse = encodePaymentResponseHeader(settled);
+    if (settled.success) {
+      this.log.info({ transaction: settled.transaction }, 'payment settled');
+      if (store.markSettled(key, payment.binding, paymentResponse) === 'served') {
+        // A concurrent request with the same payment already served it.
+        const served = store.get(key);
+        return this.send(res, served?.response ?? null, served?.paymentResponse ?? null);
+      }
+      return this.serve(payment, paymentResponse);
+    }
+    res.setHeader('PAYMENT-RESPONSE', paymentResponse);
+    if (settled.errorReason === 'settlement_pending') {
+      this.log.info(
+        { transaction: settled.transaction },
+        'settlement pending; client should retry with the same payment',
+      );
+      return this.answerPending(res, settled.transaction);
+    }
+    if (settled.transaction === '') {
+      // Rejected before reaching the network: the proof was not consumed.
+      // Only the request that created the row removes it: a concurrent
+      // request with the same payment may be settling it right now.
+      if (created) store.forget(key, 'settling');
+    } else {
+      store.transition(key, 'settling', 'failed', { paymentResponse });
+    }
+    this.log.warn({ reason: settled.errorReason }, 'payment failed');
+    return this.paymentRequired(payment, settled.errorReason ?? 'payment_failed');
   }
 
   /** authorization flow: verify → handler (response stored) → settle → send. */
-  private async authorize(
-    req: Request,
-    res: Response,
-    route: PaidRouteOptions,
-    price: { asset: string; amount: string },
-    key: string,
-    payload: PaymentPayload,
-    accepted: PaymentRequirements,
-    handler: PaidHandler,
-  ): Promise<void> {
+  private async authorize(payment: Payment): Promise<void> {
+    const { res, key } = payment;
     const store = this.options.store;
     let verified;
     try {
-      verified = await this.options.facilitator.verify(payload, accepted);
+      verified = await this.options.facilitator.verify(payment.payload, payment.accepted);
     } catch (err) {
       this.log.warn({ err }, 'facilitator unreachable during verify');
       store.forget(key, 'settling');
@@ -364,13 +422,7 @@ export class ObytePaywall {
     }
     if (!verified.isValid) {
       store.forget(key, 'settling');
-      return this.paymentRequired(
-        req,
-        res,
-        route,
-        price,
-        verified.invalidReason ?? 'invalid_payment',
-      );
+      return this.paymentRequired(payment, verified.invalidReason ?? 'invalid_payment');
     }
     if (!store.transition(key, 'settling', 'serving')) {
       res.status(409).json({ error: 'payment_in_progress' });
@@ -378,7 +430,7 @@ export class ObytePaywall {
     }
     let result: PaidResult;
     try {
-      result = await handler(req);
+      result = await payment.handler(payment.req);
     } catch (err) {
       store.transition(key, 'serving', 'settling'); // nothing settled; the same payment may retry
       this.log.error({ err }, 'paid handler failed before settlement');
@@ -386,20 +438,14 @@ export class ObytePaywall {
       return;
     }
     store.transition(key, 'serving', 'awaiting_settle', { response: toStored(result) });
-    return this.settleServed(req, res, route, price, key, payload, accepted);
+    return this.settleServed(payment);
   }
 
-  private async settleServed(
-    req: Request,
-    res: Response,
-    route: PaidRouteOptions,
-    price: { asset: string; amount: string },
-    key: string,
-    payload: PaymentPayload,
-    accepted: PaymentRequirements,
-  ): Promise<void> {
+  /** authorization flow, after the handler: settle, then send the stored response. */
+  private async settleServed(payment: Payment): Promise<void> {
+    const { res, key } = payment;
     const store = this.options.store;
-    const settled = await this.settleWithWait(payload, accepted);
+    const settled = await this.settleWithWait(payment.payload, payment.accepted);
     const paymentResponse = encodePaymentResponseHeader(settled);
     if (settled.success) {
       store.transition(key, 'awaiting_settle', 'served', { paymentResponse });
@@ -412,25 +458,25 @@ export class ObytePaywall {
     }
     res.setHeader('PAYMENT-RESPONSE', paymentResponse);
     if (settled.errorReason === 'settlement_pending') {
-      res.setHeader('Retry-After', '5');
-      res.status(402).json({ error: 'settlement_pending', transaction: settled.transaction });
-      return;
+      return this.answerPending(res, settled.transaction);
     }
     store.transition(key, 'awaiting_settle', 'failed', { paymentResponse });
     this.log.warn(
       { reason: settled.errorReason },
       'payment failed AFTER the handler ran (authorization flow); response withheld',
     );
-    return this.paymentRequired(req, res, route, price, settled.errorReason ?? 'payment_failed');
+    return this.paymentRequired(payment, settled.errorReason ?? 'payment_failed');
   }
 
-  private async serve(
-    req: Request,
-    res: Response,
-    key: string,
-    paymentResponse: string | null,
-    handler: PaidHandler,
-  ): Promise<void> {
+  /** Not final yet: the client retries with the same payment. */
+  private answerPending(res: Response, transaction: string): void {
+    res.setHeader('Retry-After', '5');
+    res.status(402).json({ error: 'settlement_pending', transaction });
+  }
+
+  /** Runs the handler once for a settled payment and stores its response. */
+  private async serve(payment: Payment, paymentResponse: string | null): Promise<void> {
+    const { res, key } = payment;
     const store = this.options.store;
     if (!store.transition(key, 'paid_not_served', 'serving')) {
       res.status(409).json({ error: 'payment_in_progress' });
@@ -438,7 +484,7 @@ export class ObytePaywall {
     }
     let result: PaidResult;
     try {
-      result = await handler(req);
+      result = await payment.handler(payment.req);
     } catch (err) {
       store.transition(key, 'serving', 'paid_not_served');
       this.log.error(
@@ -472,13 +518,7 @@ export class ObytePaywall {
     res.status(response.status).end(Buffer.from(response.body));
   }
 
-  private paymentRequired(
-    req: Request,
-    res: Response,
-    route: PaidRouteOptions,
-    price: { asset: string; amount: string },
-    error?: string,
-  ): void {
+  private paymentRequired({ req, res, route, price }: PaidCall, error?: string): void {
     // A refused payment that was never settled: say so explicitly (success:
     // false, empty transaction) so the client knows it was NOT used and can
     // release its budget and its channel voucher. A settle failure already
@@ -550,7 +590,7 @@ export class ObytePaywall {
     };
   }
 
-  private terms(price: { asset: string; amount: string }): PaymentTerms {
+  private terms(price: Price): PaymentTerms {
     return { network: this.options.network, payTo: this.options.payTo, ...price };
   }
 

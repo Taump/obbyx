@@ -1,4 +1,4 @@
-import type obyte from 'obyte';
+import obyte from 'obyte';
 
 export type PostBehaviour = 'accept' | 'reject' | 'drop' | 'hang';
 
@@ -81,6 +81,17 @@ export class FakeHub {
     },
     close: () => undefined,
   };
+
+  /**
+   * A real obyte.js client (it can compose and sign) whose hub requests are
+   * answered by this FakeHub; it never connects.
+   */
+  obyteClient(): obyte.Client {
+    const c = new obyte.Client('ws://127.0.0.1:9', { testnet: true });
+    c.close();
+    Object.assign((c as unknown as { api: object }).api, this.client.api);
+    return c;
+  }
 
   asClient(): obyte.Client {
     return this.client as unknown as obyte.Client;

@@ -1,8 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import obyte from 'obyte';
+import type obyte from 'obyte';
 import type { ObyteNetwork } from '@obbyx/obyte';
 import type { Logger } from '@obbyx/obyte/logger';
 import { SqliteBatchStore, SqliteSettlementStore } from '@obbyx/x402-obyte';
@@ -11,6 +7,7 @@ import { buildFacilitator } from '../../../apps/facilitator/src/http/server.js';
 import { WsWatcherGateway } from '../../../apps/facilitator/src/watcher/gateway.js';
 import { WatcherStore, openWatcherDatabase } from '../../../apps/watcher/src/storage/store.js';
 import { FacilitatorLink } from '../../../apps/watcher/src/facilitator/link.js';
+import { migratedSqliteFile } from '../../obyte/test/helpers.js';
 import type { FakeHub } from '../../x402-obyte/test/fake-hub.js';
 
 /**
@@ -39,26 +36,7 @@ export async function until(cond: () => boolean | Promise<boolean>, ms = 3000): 
 }
 
 /** obyte.js client whose hub requests go to the FakeHub. */
-export function hubClient(hub: FakeHub): obyte.Client {
-  const c = new obyte.Client('ws://127.0.0.1:9', { testnet: true });
-  c.close();
-  Object.assign((c as unknown as { api: object }).api, hub.client.api);
-  return c;
-}
-
-/** A fresh watcher database file with every migration applied. */
-function watcherDbFile(): string {
-  const file = join(mkdtempSync(join(tmpdir(), 'obbyx-channels-')), 'watcher.db');
-  const db = new DatabaseSync(file);
-  const dir = new URL('../../../apps/watcher/prisma/migrations/', import.meta.url).pathname;
-  for (const m of readdirSync(dir)
-    .filter((d) => !d.endsWith('.toml'))
-    .sort()) {
-    db.exec(readFileSync(join(dir, m, 'migration.sql'), 'utf8'));
-  }
-  db.close();
-  return file;
-}
+export const hubClient = (hub: FakeHub): obyte.Client => hub.obyteClient();
 
 export async function startChannelStack(options: {
   readonly hub: FakeHub;
@@ -91,7 +69,14 @@ export async function startChannelStack(options: {
   gateway.attach(facilitator.http.server);
   const facilitatorUrl = await facilitator.http.listen({ host: '127.0.0.1', port: 0 });
 
-  const watcherStore = new WatcherStore(await openWatcherDatabase(watcherDbFile()));
+  const watcherStore = new WatcherStore(
+    await openWatcherDatabase(
+      migratedSqliteFile(
+        new URL('../../../apps/watcher/prisma/migrations/', import.meta.url),
+        'watcher.db',
+      ),
+    ),
+  );
   const link = new FacilitatorLink({
     url: `${facilitatorUrl.replace('http', 'ws')}/watcher`,
     network,

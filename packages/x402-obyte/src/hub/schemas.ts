@@ -87,3 +87,32 @@ export function parseStateVars(raw: unknown): Record<string, unknown> | undefine
   const parsed = z.record(z.string(), z.unknown()).safeParse(raw);
   return parsed.success ? parsed.data : undefined;
 }
+
+/** Balance of one asset: confirmed (stable) and not yet confirmed (pending), atomic units. */
+export interface AssetBalance {
+  readonly stable: bigint;
+  readonly pending: bigint;
+}
+
+const balancesSchema = z.record(
+  z.string(),
+  z.record(z.string(), z.object({ stable: safeAmount, pending: safeAmount }).loose()),
+);
+
+/**
+ * `light/get_balances` for one address: balances by asset ('base' = bytes);
+ * an address without funds has none. Undefined when the answer is malformed.
+ */
+export function parseBalances(
+  raw: unknown,
+  address: string,
+): Record<string, AssetBalance> | undefined {
+  const parsed = balancesSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  return Object.fromEntries(
+    Object.entries(parsed.data[address] ?? {}).map(([asset, b]) => [
+      asset,
+      { stable: BigInt(b.stable), pending: BigInt(b.pending) },
+    ]),
+  );
+}

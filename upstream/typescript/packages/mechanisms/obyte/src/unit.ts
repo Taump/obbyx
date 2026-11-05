@@ -109,7 +109,8 @@ export function expectedCommissions(unit: object): { headers: number; payload: n
  * Ledger-independent validation of a client-signed unit against the supported
  * profile: structure and size, network, unit and payload hashes, author
  * definition and signature, message set, outputs, the signed binding and the
- * commissions. Anything outside the profile is rejected.
+ * commissions. Anything outside the profile is rejected. The order of the
+ * checks is part of the contract: the first failing one decides the reason.
  *
  * @param unit - The unit from the payment payload.
  * @param expect - What the unit must pay.
@@ -122,8 +123,61 @@ export function validateExactUnit(
   expect: ExactUnitExpectation,
   options: { authorDefinition?: SigDefinition } = {},
 ): Check<ExactUnitFacts> {
-  const unsupported = (why: string) => fail(ERR_UNSUPPORTED_UNIT, why);
+  const shaped = checkShape(unit, expect);
+  if (!shaped.ok) return shaped;
+  const u = shaped.value;
+  const hashed = checkUnitHash(u);
+  if (!hashed.ok) return hashed;
+  const { unitHash, messages, authors } = hashed.value;
+  const author = checkAuthor(u, authors, options.authorDefinition);
+  if (!author.ok) return author;
+  const { payer, definitionFromLedger } = author.value;
+  if (payer === expect.payTo) return fail(ERR_PAYER, "Payer and payTo must differ");
+  if (expect.facilitatorAddresses?.includes(payer)) {
+    return fail(ERR_PAYER, "A facilitator address must never be the payer");
+  }
+  const payments = checkMessages(messages, expect);
+  if (!payments.ok) return payments;
+  const transfers = checkTransfers(payments.value, payer, expect);
+  if (!transfers.ok) return transfers;
+  const commissions = expectedCommissions(u);
+  if (
+    commissions.headers !== u["headers_commission"] ||
+    commissions.payload !== u["payload_commission"]
+  ) {
+    return fail(ERR_COMMISSIONS, "Commissions do not match the unit size");
+  }
+  return pass({
+    unitHash,
+    payer,
+    inputs: transfers.value.inputs,
+    lastBallUnit: u["last_ball_unit"] as string,
+    parentUnits: u["parent_units"] as string[],
+    timestamp: u["timestamp"] as number,
+    outputTotals: transfers.value.outputTotals,
+    commissions,
+    definitionFromLedger,
+  });
+}
 
+/**
+ * A failure for a unit outside the supported profile.
+ *
+ * @param why - What is outside the profile.
+ * @returns The failure.
+ */
+function unsupported(why: string): { ok: false; reason: string; message: string } {
+  return fail(ERR_UNSUPPORTED_UNIT, why);
+}
+
+/**
+ * Structure, size, network and header fields.
+ *
+ * @param unit - Candidate unit.
+ * @param expect - Expected network and size limit.
+ * @returns The unit as a record, or the failure.
+ */
+function checkShape(unit: unknown, expect: ExactUnitExpectation): Check<Record<string, unknown>> {
   if (!isPlainObject(unit)) return unsupported("Unit must be an object");
   let serialized: string;
   try {
@@ -140,7 +194,6 @@ export function validateExactUnit(
   if (unit["version"] !== version.version || unit["alt"] !== version.alt) {
     return fail(ERR_NETWORK, `Unit version/alt do not match ${expect.network}`);
   }
-
   const parents = unit["parent_units"];
   if (!Array.isArray(parents) || parents.length === 0 || !parents.every(isHash)) {
     return unsupported("Invalid parent_units");
@@ -157,7 +210,18 @@ export function validateExactUnit(
   for (const fee of ["tps_fee", "burn_fee", "max_aa_responses"] as const) {
     if (fee in unit && !isIndex(unit[fee])) return unsupported(`Invalid ${fee}`);
   }
+  return pass(unit);
+}
 
+/**
+ * The unit hash is present and matches the content.
+ *
+ * @param unit - The unit.
+ * @returns Hash, messages and authors, or the failure.
+ */
+function checkUnitHash(
+  unit: Record<string, unknown>,
+): Check<{ unitHash: string; messages: unknown[]; authors: unknown[] }> {
   if (!isHash(unit["unit"])) return fail(ERR_UNIT_HASH, "Missing unit hash");
   const messages = unit["messages"];
   const authors = unit["authors"];
@@ -169,7 +233,22 @@ export function validateExactUnit(
     return fail(ERR_UNIT_HASH, "Unit cannot be hashed");
   }
   if (unitHash !== unit["unit"]) return fail(ERR_UNIT_HASH, "Unit hash does not match content");
+  return pass({ unitHash, messages, authors });
+}
 
+/**
+ * One author with a single-sig definition (embedded or from the ledger) and a valid signature.
+ *
+ * @param unit - The unit (for the signed hash).
+ * @param authors - Its authors.
+ * @param ledgerDefinition - Definition read from the ledger, if any.
+ * @returns The payer and where its definition came from, or the failure.
+ */
+function checkAuthor(
+  unit: Record<string, unknown>,
+  authors: unknown[],
+  ledgerDefinition: SigDefinition | undefined,
+): Check<{ payer: string; definitionFromLedger: boolean }> {
   if (authors.length !== 1) return unsupported("Exactly one author is supported");
   const author: unknown = authors[0];
   if (!isPlainObject(author) || !hasOnlyKeys(author, AUTHOR_KEYS)) {
@@ -177,25 +256,16 @@ export function validateExactUnit(
   }
   const payer = author["address"];
   if (!isAddress(payer)) return unsupported("Invalid author address");
-
-  let definition: SigDefinition;
-  let definitionFromLedger = false;
-  if ("definition" in author) {
-    if (!isSigDefinition(author["definition"])) {
-      return fail(ERR_DEFINITION, "Only ['sig', {pubkey}] author definitions are supported");
-    }
-    definition = author["definition"];
-  } else if (options.authorDefinition !== undefined) {
-    if (!isSigDefinition(options.authorDefinition)) {
-      return fail(ERR_DEFINITION, "Only ['sig', {pubkey}] author definitions are supported");
-    }
-    definition = options.authorDefinition;
-    definitionFromLedger = true;
-  } else {
+  const embedded = "definition" in author;
+  const definition: unknown = embedded ? author["definition"] : ledgerDefinition;
+  if (definition === undefined) {
     return fail(
       ERR_DEFINITION_REQUIRED,
       "Author definition is not embedded; read it from the ledger",
     );
+  }
+  if (!isSigDefinition(definition)) {
+    return fail(ERR_DEFINITION, "Only ['sig', {pubkey}] author definitions are supported");
   }
   if (obyte.utils.getChash160([...definition]) !== payer) {
     return fail(ERR_DEFINITION, "Definition does not match the author address");
@@ -207,12 +277,21 @@ export function validateExactUnit(
   if (!verifySignature(getUnitHashToSign(unit), authentifiers["r"], definition[1].pubkey)) {
     return fail(ERR_SIGNATURE, "Signature is invalid");
   }
+  return pass({ payer, definitionFromLedger: !embedded });
+}
 
-  if (payer === expect.payTo) return fail(ERR_PAYER, "Payer and payTo must differ");
-  if (expect.facilitatorAddresses?.includes(payer)) {
-    return fail(ERR_PAYER, "A facilitator address must never be the payer");
-  }
-
+/**
+ * Inline messages with matching hashes: exactly one data message carrying the
+ * binding, one payment per asset, bytes always and only the expected asset besides.
+ *
+ * @param messages - Messages of the unit.
+ * @param expect - Expected binding and asset.
+ * @returns Payment payloads by asset, or the failure.
+ */
+function checkMessages(
+  messages: unknown[],
+  expect: ExactUnitExpectation,
+): Check<Map<string, Record<string, unknown>>> {
   let dataCount = 0;
   const payments = new Map<string, Record<string, unknown>>();
   for (const message of messages) {
@@ -231,16 +310,10 @@ export function validateExactUnit(
       const binding = checkBinding(payload, expect);
       if (!binding.ok) return binding;
     } else if (message["app"] === "payment") {
-      if (!isPlainObject(payload) || !hasOnlyKeys(payload, PAYMENT_KEYS)) {
-        return unsupported("Malformed payment");
-      }
-      const asset = "asset" in payload ? payload["asset"] : BYTES_ASSET;
-      if (asset === BYTES_ASSET && "asset" in payload) {
-        return unsupported("Bytes payment must omit asset");
-      }
-      if (!isAssetId(asset)) return unsupported("Invalid payment asset");
-      if (payments.has(asset)) return unsupported("One payment message per asset");
-      payments.set(asset, payload);
+      const asset = paymentAsset(payload);
+      if (!asset.ok) return asset;
+      if (payments.has(asset.value)) return unsupported("One payment message per asset");
+      payments.set(asset.value, payload as Record<string, unknown>);
     } else {
       return unsupported("Only payment and data messages are supported");
     }
@@ -255,7 +328,40 @@ export function validateExactUnit(
     }
   }
   if (!payments.has(expect.asset)) return fail(ERR_ASSET, "No payment in the required asset");
+  return pass(payments);
+}
 
+/**
+ * The asset of a payment message (`base` when omitted).
+ *
+ * @param payload - Payment payload.
+ * @returns The asset, or the failure.
+ */
+function paymentAsset(payload: unknown): Check<string> {
+  if (!isPlainObject(payload) || !hasOnlyKeys(payload, PAYMENT_KEYS)) {
+    return unsupported("Malformed payment");
+  }
+  const asset = "asset" in payload ? payload["asset"] : BYTES_ASSET;
+  if (asset === BYTES_ASSET && "asset" in payload)
+    return unsupported("Bytes payment must omit asset");
+  if (!isAssetId(asset)) return unsupported("Invalid payment asset");
+  return pass(asset);
+}
+
+/**
+ * Transfer inputs only (no duplicates); sorted outputs that go to payTo
+ * (exactly once, the exact amount, the expected asset) or back to the payer.
+ *
+ * @param payments - Payment payloads by asset.
+ * @param payer - The payer address.
+ * @param expect - Expected recipient, asset and amount.
+ * @returns Inputs and output totals, or the failure.
+ */
+function checkTransfers(
+  payments: Map<string, Record<string, unknown>>,
+  payer: string,
+  expect: ExactUnitExpectation,
+): Check<{ inputs: InputRef[]; outputTotals: Record<string, bigint> }> {
   const inputs: InputRef[] = [];
   const seenInputs = new Set<string>();
   const outputTotals: Record<string, bigint> = {};
@@ -268,24 +374,12 @@ export function validateExactUnit(
       return unsupported("Payment needs inputs and outputs");
     }
     for (const input of ins) {
-      if (
-        !isPlainObject(input) ||
-        !hasOnlyKeys(input, INPUT_KEYS) ||
-        !isHash(input["unit"]) ||
-        !isIndex(input["message_index"]) ||
-        !isIndex(input["output_index"])
-      ) {
-        return unsupported("Only transfer inputs are supported");
-      }
-      const key = `${input["unit"]}:${input["message_index"]}:${input["output_index"]}`;
+      const ref = transferInput(input, asset);
+      if (ref === undefined) return unsupported("Only transfer inputs are supported");
+      const key = `${ref.unit}:${ref.messageIndex}:${ref.outputIndex}`;
       if (seenInputs.has(key)) return unsupported("Duplicate input");
       seenInputs.add(key);
-      inputs.push({
-        asset,
-        unit: input["unit"],
-        messageIndex: input["message_index"],
-        outputIndex: input["output_index"],
-      });
+      inputs.push(ref);
     }
     let total = 0n;
     let previous: { address: string; amount: number } | undefined;
@@ -305,14 +399,13 @@ export function validateExactUnit(
         return unsupported("Outputs must be sorted by address and amount without duplicates");
       }
       previous = current;
-      const amount = BigInt(output["amount"]);
-      total += amount;
-      if (output["address"] === expect.payTo) {
+      total += BigInt(current.amount);
+      if (current.address === expect.payTo) {
         if (asset !== expect.asset)
           return fail(ERR_RECIPIENT, "payTo receives an unexpected asset");
         outputsToPayTo += 1;
-        paidToPayTo += amount;
-      } else if (output["address"] !== payer) {
+        paidToPayTo += BigInt(current.amount);
+      } else if (current.address !== payer) {
         return fail(ERR_RECIPIENT, "Outputs may only go to payTo or back to the payer");
       }
     }
@@ -320,26 +413,32 @@ export function validateExactUnit(
   }
   if (outputsToPayTo !== 1) return fail(ERR_RECIPIENT, "Exactly one output to payTo is required");
   if (paidToPayTo !== expect.amount) return fail(ERR_AMOUNT, "Amount paid to payTo does not match");
+  return pass({ inputs, outputTotals });
+}
 
-  const commissions = expectedCommissions(unit);
+/**
+ * A transfer input (unit, message_index, output_index).
+ *
+ * @param input - Candidate input.
+ * @param asset - Asset of its payment.
+ * @returns The input, or undefined for anything else.
+ */
+function transferInput(input: unknown, asset: string): InputRef | undefined {
   if (
-    commissions.headers !== unit["headers_commission"] ||
-    commissions.payload !== unit["payload_commission"]
+    !isPlainObject(input) ||
+    !hasOnlyKeys(input, INPUT_KEYS) ||
+    !isHash(input["unit"]) ||
+    !isIndex(input["message_index"]) ||
+    !isIndex(input["output_index"])
   ) {
-    return fail(ERR_COMMISSIONS, "Commissions do not match the unit size");
+    return undefined;
   }
-
-  return pass({
-    unitHash,
-    payer,
-    inputs,
-    lastBallUnit: unit["last_ball_unit"],
-    parentUnits: parents,
-    timestamp: unit["timestamp"] as number,
-    outputTotals,
-    commissions,
-    definitionFromLedger,
-  });
+  return {
+    asset,
+    unit: input["unit"],
+    messageIndex: input["message_index"],
+    outputIndex: input["output_index"],
+  };
 }
 
 /**

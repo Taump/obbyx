@@ -1,11 +1,9 @@
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { Writable } from 'node:stream';
 import express from 'express';
 import { HTTPFacilitatorClient } from '@x402/core/http';
-import { createLogger } from '@obbyx/obyte/logger';
 import { afterEach, describe, expect, it } from 'vitest';
-import { addressOf, testKey } from '../../obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { mergeHeaderList, type PaywallCorsOptions } from '../src/seller/cors.js';
 import { ObytePaywall } from '../src/seller/paywall.js';
@@ -14,7 +12,7 @@ import { ObytePaywall } from '../src/seller/paywall.js';
  * x402 HTTP transport, "Browser clients": the 402 must be readable and the
  * payment sendable from another origin; preflights never require payment.
  */
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const APP = 'https://app.example';
 let server: Server | undefined;
 

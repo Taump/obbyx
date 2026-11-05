@@ -1,11 +1,9 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { Writable } from 'node:stream';
 import express from 'express';
 import obyte from 'obyte';
 import { HTTPFacilitatorClient } from '@x402/core/http';
 import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402/core/http';
-import { createLogger } from '@obbyx/obyte/logger';
 import { ExactObyteClient, SqliteSettlementStore } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadFacilitatorConfig } from '../../../apps/facilitator/src/config.js';
@@ -13,7 +11,14 @@ import {
   type FacilitatorApp,
   buildFacilitator,
 } from '../../../apps/facilitator/src/http/server.js';
-import { HASH_A, HASH_B, HASH_C, addressOf, testKey } from '../../obyte/test/helpers.js';
+import {
+  HASH_A,
+  HASH_B,
+  HASH_C,
+  addressOf,
+  testKey,
+  silentLogger,
+} from '../../obyte/test/helpers.js';
 import { FakeHub } from '../../x402-obyte/test/fake-hub.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { SpendingBudget } from '../src/client/budget.js';
@@ -24,7 +29,7 @@ const NET = 'obyte:testnet';
 const payerKey = testKey('payer');
 const payer = addressOf(payerKey);
 const seller = addressOf(testKey('seller'));
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 /** obyte.js client whose hub calls for composing are answered offline. */

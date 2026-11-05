@@ -1,7 +1,5 @@
-import { Writable } from 'node:stream';
 import Fastify, { type FastifyInstance } from 'fastify';
 import obyte from 'obyte';
-import { createLogger } from '@obbyx/obyte/logger';
 import {
   type AppendInput,
   type ServerMessage,
@@ -11,12 +9,12 @@ import {
 } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WsWatcherGateway } from '../src/watcher/gateway.js';
-import { addressOf, testKey } from '../../../packages/obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../../packages/obyte/test/helpers.js';
 
 const NET = 'obyte:testnet';
 const sellerKey = testKey('seller');
 const seller = addressOf(sellerKey);
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 
 let http: FastifyInstance;
 let gateway: WsWatcherGateway;

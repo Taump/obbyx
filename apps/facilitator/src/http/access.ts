@@ -42,6 +42,19 @@ export function createAccessGuard(options: AccessOptions) {
   const now = options.now ?? (() => Date.now());
   const windows = new Map<string, { start: number; count: number }>();
 
+  /** Counts a request in its client's one-minute window; true when over the limit. */
+  const overRate = (client: string): boolean => {
+    const t = now();
+    const w = windows.get(client);
+    if (w !== undefined && t - w.start < 60_000) return ++w.count > options.ratePerMinute;
+    windows.set(client, { start: t, count: 1 });
+    // Bound memory: forget finished windows once there are many clients.
+    if (windows.size > 10_000) {
+      for (const [k, v] of windows) if (t - v.start >= 60_000) windows.delete(k);
+    }
+    return false;
+  };
+
   /** Returns a rejection to send, or undefined to let the request through. */
   return function check(request: FastifyRequest): { status: number; reason: string } | undefined {
     const presented = presentedKey(request);
@@ -51,16 +64,7 @@ export function createAccessGuard(options: AccessOptions) {
     if (options.ratePerMinute > 0) {
       const client =
         keys.length > 0 && presented !== undefined ? `key:${presented}` : `ip:${request.ip}`;
-      const t = now();
-      const w = windows.get(client);
-      if (w === undefined || t - w.start >= 60_000) {
-        windows.set(client, { start: t, count: 1 });
-        if (windows.size > 10_000) {
-          for (const [k, v] of windows) if (t - v.start >= 60_000) windows.delete(k);
-        }
-      } else if (++w.count > options.ratePerMinute) {
-        return { status: 429, reason: 'rate_limited' };
-      }
+      if (overRate(client)) return { status: 429, reason: 'rate_limited' };
     }
     return undefined;
   };

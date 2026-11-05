@@ -19,8 +19,13 @@ import obyte from 'obyte';
 import type { ReservingComposer } from '../coins/index.js';
 import { hubCall } from '../hub/hub-call.js';
 import { parseStateVars } from '../hub/schemas.js';
-import type { ClientChannelStore, PendingVoucher } from './client-store.js';
-import { BATCH_REASONS, BATCH_SCHEME, parseBatchRequirements } from './requirements.js';
+import type { ClientChannel, ClientChannelStore, PendingVoucher } from './client-store.js';
+import {
+  BATCH_REASONS,
+  BATCH_SCHEME,
+  type ParsedBatchRequirements,
+  parseBatchRequirements,
+} from './requirements.js';
 
 /**
  * Buyer side of `batch-settlement` on Obyte (party B of an AA channel).
@@ -194,8 +199,33 @@ export class BatchObyteClient implements SchemeNetworkClient {
     if (cap !== undefined && req.amount > cap) {
       throw new ObbyxError('amount_over_limit', `Price ${req.amount} exceeds the limit ${cap}`);
     }
-    const store = this.options.store;
-    const channel = store.find(req.network.caip2, req.payTo, req.asset);
+    const channel = this.channelFor(req);
+
+    // Same operation retried: resend the same voucher (never sign a second one).
+    if (channel.pending !== null) {
+      if (channel.pending.binding === req.extra.binding)
+        return { x402Version: 2, payload: { signedPackage: channel.pending.signedPackage } };
+      throw new ObbyxError(
+        'payment_pending',
+        `A previous voucher on channel ${channel.aa} has an unknown outcome; retry that request first`,
+      );
+    }
+
+    const { period, balance } = await this.ledgerState(channel);
+    const committed = period > channel.period ? 0n : channel.committed;
+    const amountSpent = committed + req.amount;
+    if (amountSpent > balance) {
+      throw new ObbyxError(
+        'channel_exhausted',
+        `Channel balance ${balance} is not enough; deposit more with: obbyx channel deposit ${channel.aa}`,
+      );
+    }
+    return this.signVoucher(channel.aa, period, amountSpent, req);
+  }
+
+  /** Our open channel to this seller, with a dispute window the seller accepts. */
+  private channelFor(req: ParsedBatchRequirements): ClientChannel {
+    const channel = this.options.store.find(req.network.caip2, req.payTo, req.asset);
     if (channel === undefined) {
       throw new ObbyxError(
         'no_channel',
@@ -208,17 +238,14 @@ export class BatchObyteClient implements SchemeNetworkClient {
         `The seller requires a channel timeout ≥ ${req.extra.minTimeout} s`,
       );
     }
+    return channel;
+  }
 
-    // Same operation retried: resend the same voucher (never sign a second one).
-    if (channel.pending !== null) {
-      if (channel.pending.binding === req.extra.binding)
-        return { x402Version: 2, payload: { signedPackage: channel.pending.signedPackage } };
-      throw new ObbyxError(
-        'payment_pending',
-        `A previous voucher on channel ${channel.aa} has an unknown outcome; retry that request first`,
-      );
-    }
-
+  /**
+   * The channel's current period and confirmed deposit, from the AA state.
+   * A new period (the channel was closed and reopened) resets our local amount.
+   */
+  private async ledgerState(channel: ClientChannel): Promise<{ period: number; balance: bigint }> {
     const vars = await hubCall(
       () => this.options.client.api.getAaStateVars({ address: channel.aa }),
       this.options.hubTimeoutMs ?? 15_000,
@@ -236,19 +263,20 @@ export class BatchObyteClient implements SchemeNetworkClient {
       );
     if (state['close_initiated_by'] !== undefined)
       throw new ObbyxError('channel_closing', 'The channel is being closed');
-    if (period > channel.period) store.newPeriod(channel.aa, period);
-    const committed = period > channel.period ? 0n : channel.committed;
-    const amountSpent = committed + req.amount;
+    if (period > channel.period) this.options.store.newPeriod(channel.aa, period);
     const balance = BigInt(typeof state['balanceB'] === 'number' ? state['balanceB'] : 0);
-    if (amountSpent > balance) {
-      throw new ObbyxError(
-        'channel_exhausted',
-        `Channel balance ${balance} is not enough; deposit more with: obbyx channel deposit ${channel.aa}`,
-      );
-    }
+    return { period, balance };
+  }
 
+  /** Signs the voucher and records it as THE pending one of the channel (one at a time). */
+  private signVoucher(
+    aa: string,
+    period: number,
+    amountSpent: bigint,
+    req: ParsedBatchRequirements,
+  ): PaymentPayloadResult {
     const message = {
-      aa_address: channel.aa,
+      aa_address: aa,
       period,
       amount_spent: toSafeNumber(amountSpent),
       payment_amount: toSafeNumber(req.amount),
@@ -264,11 +292,11 @@ export class BatchObyteClient implements SchemeNetworkClient {
       amountSpent: amountSpent.toString(),
       signedPackage,
     };
-    if (!store.setPending(channel.aa, pending)) {
+    if (!this.options.store.setPending(aa, pending)) {
       throw new ObbyxError('payment_pending', 'Another voucher on this channel is in flight');
     }
     this.log.info(
-      { aa: channel.aa, period, amountSpent: amountSpent.toString(), binding: req.extra.binding },
+      { aa, period, amountSpent: amountSpent.toString(), binding: req.extra.binding },
       'voucher signed',
     );
     return { x402Version: 2, payload: { signedPackage } };
@@ -298,23 +326,7 @@ export class BatchObyteClient implements SchemeNetworkClient {
       typeof charged === 'string' &&
       /^\d+$/.test(charged)
     ) {
-      // PAYMENT-RESPONSE is NOT authenticated: never raise our committed amount
-      // to an arbitrary value (a malicious seller could make us sign a voucher
-      // for the whole deposit). Accept only:
-      //  - exactly the amount of the voucher WE signed (it was committed earlier), or
-      //  - a lower amount (signing less than before cannot hurt us).
-      const claimed = BigInt(charged);
-      if (claimed === BigInt(pending.amountSpent)) {
-        this.options.store.confirm(channel.aa, pending.period, claimed);
-      } else if (pending.period === channel.period && claimed <= channel.committed) {
-        this.options.store.dropPending(channel.aa, { period: pending.period, committed: claimed });
-      } else {
-        this.options.store.dropPending(channel.aa);
-        this.log.error(
-          { aa: channel.aa, claimed: charged, local: channel.committed.toString() },
-          'seller claimed a committed amount we never signed; refusing to resync',
-        );
-      }
+      this.resync(channel, pending, BigInt(charged));
     } else if (
       reason !== undefined &&
       reason !== 'settlement_pending' &&
@@ -324,5 +336,26 @@ export class BatchObyteClient implements SchemeNetworkClient {
       this.options.store.dropPending(channel.aa);
     }
     // settlement_pending / busy / no answer: keep the voucher pending; retry the same operation.
+  }
+
+  /**
+   * The seller says our committed amount differs. PAYMENT-RESPONSE is NOT
+   * authenticated: never raise our committed amount to an arbitrary value (a
+   * malicious seller could make us sign a voucher for the whole deposit).
+   * Accept only exactly the voucher WE signed (it was committed earlier), or a
+   * lower amount (signing less than before cannot hurt us).
+   */
+  private resync(channel: ClientChannel, pending: PendingVoucher, claimed: bigint): void {
+    if (claimed === BigInt(pending.amountSpent)) {
+      this.options.store.confirm(channel.aa, pending.period, claimed);
+    } else if (pending.period === channel.period && claimed <= channel.committed) {
+      this.options.store.dropPending(channel.aa, { period: pending.period, committed: claimed });
+    } else {
+      this.options.store.dropPending(channel.aa);
+      this.log.error(
+        { aa: channel.aa, claimed: claimed.toString(), local: channel.committed.toString() },
+        'seller claimed a committed amount we never signed; refusing to resync',
+      );
+    }
   }
 }

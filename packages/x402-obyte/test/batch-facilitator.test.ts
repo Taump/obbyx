@@ -1,15 +1,13 @@
-import { Writable } from 'node:stream';
 import obyte from 'obyte';
 import type { PaymentPayload, PaymentRequirements } from '@x402/core/types';
 import { CHANNEL_BASE_AA, channelAddress, channelDefinition } from '@obbyx/obyte';
-import { createLogger } from '@obbyx/obyte/logger';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { BatchObyteFacilitator } from '../src/batch/facilitator.js';
 import type { WatcherGateway } from '../src/batch/gateway.js';
 import { BATCH_REASONS as R } from '../src/batch/requirements.js';
 import { SqliteBatchStore, type CommitmentRow } from '../src/batch/store.js';
 import { SqliteSettlementStore } from '../src/exact/store.js';
-import { addressOf, testKey } from '../../obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { FakeHub } from './fake-hub.js';
 
 const NET = 'obyte:testnet';
@@ -17,7 +15,7 @@ const NOW = 1_790_000_000;
 const clientKey = testKey('client');
 const client = addressOf(clientKey);
 const seller = addressOf(testKey('seller'));
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const params = { addressA: seller, addressB: client, asset: 'base', salt: 's1', timeout: 7200 };
 const AA = channelAddress(params);
 

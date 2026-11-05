@@ -1,10 +1,8 @@
-import { Writable } from 'node:stream';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import obyte from 'obyte';
 import type { PaymentPayload, PaymentRequirements } from '@x402/core/types';
-import { createLogger } from '@obbyx/obyte/logger';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   EXACT_SETTLE_REASONS as S,
@@ -12,7 +10,14 @@ import {
   isTransientPostError,
 } from '../src/exact/facilitator.js';
 import { SqliteSettlementStore, StoreLockedError } from '../src/exact/store.js';
-import { HASH_A, HASH_C, addressOf, composeTestUnit, testKey } from '../../obyte/test/helpers.js';
+import {
+  HASH_A,
+  HASH_C,
+  addressOf,
+  composeTestUnit,
+  testKey,
+  silentLogger,
+} from '../../obyte/test/helpers.js';
 import { failOnce } from './fail-once.js';
 import { FakeHub } from './fake-hub.js';
 
@@ -22,7 +27,7 @@ const payerKey = testKey('payer');
 const payer = addressOf(payerKey);
 const seller = addressOf(testKey('seller'));
 const PROBE = obyte.utils.getChash160(['sig', { pubkey: 'A'.repeat(44) }]);
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 
 const requirements: PaymentRequirements = {
   scheme: 'exact',

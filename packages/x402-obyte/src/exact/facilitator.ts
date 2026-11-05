@@ -90,6 +90,8 @@ export class ExactObyteFacilitator implements SchemeNetworkFacilitator {
   private readonly now: () => number;
   /** Serializes settle/resume per settlement key inside this process. */
   private readonly inFlight = new Map<string, Promise<SettleResponse>>();
+  /** Known plain (non-AA) recipients; an address can never turn into an AA. */
+  private readonly plainRecipients = new Set<string>();
 
   constructor(private readonly options: ExactObyteFacilitatorOptions) {
     this.log = moduleLogger(options.logger, 'x402.exact', { scheme: EXACT_SCHEME });
@@ -264,16 +266,12 @@ export class ExactObyteFacilitator implements SchemeNetworkFacilitator {
         now: this.now,
       },
       client,
-      req,
       facts,
       unit as Record<string, unknown>,
     );
     if (!ledger.ok) return ledger;
     return { ok: true, value: { facts, req } };
   }
-
-  /** Known plain (non-AA) recipients; an address can never turn into an AA. */
-  private readonly plainRecipients = new Set<string>();
 
   private async recipientIsNotAa(client: obyte.Client, payTo: string): Promise<Check<null>> {
     if (this.plainRecipients.has(payTo)) return { ok: true, value: null };

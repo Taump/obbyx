@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { chmodSync, mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -12,24 +11,11 @@ import {
   StoreLockedError,
 } from '@obbyx/x402-obyte';
 import { afterEach, describe, expect, it } from 'vitest';
+import { migratedSqliteFile } from '../../../packages/obyte/test/helpers.js';
 import { SchemaNotMigratedError, openDatabase } from '../src/storage/database.js';
 import { PrismaBatchStore } from '../src/storage/batch-store.js';
 import { PackageCipher } from '../src/storage/package-cipher.js';
 import { PrismaSettlementStore } from '../src/storage/settlement-store.js';
-
-/** Applies the Prisma migrations to a fresh file (what `prisma migrate deploy` does). */
-function migratedFile(): string {
-  const file = join(mkdtempSync(join(tmpdir(), 'obbyx-prisma-')), 'facilitator.db');
-  const db = new DatabaseSync(file);
-  const dir = new URL('../prisma/migrations/', import.meta.url).pathname;
-  for (const m of readdirSync(dir)
-    .filter((d) => !d.endsWith('.toml'))
-    .sort()) {
-    db.exec(readFileSync(join(dir, m, 'migration.sql'), 'utf8'));
-  }
-  db.close();
-  return file;
-}
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -53,7 +39,9 @@ const IMPLS: Impl[] = [
   {
     name: 'prisma',
     async make() {
-      const prisma = await openDatabase(migratedFile());
+      const prisma = await openDatabase(
+        migratedSqliteFile(new URL('../prisma/migrations/', import.meta.url), 'facilitator.db'),
+      );
       cleanups.push(() => prisma.$disconnect());
       return {
         settlements: new PrismaSettlementStore(prisma),
@@ -194,7 +182,10 @@ describe.each(IMPLS)('BatchStore contract — $name', (impl) => {
 
 describe('Prisma database', () => {
   it('a second facilitator process cannot open the same database file', async () => {
-    const file = migratedFile();
+    const file = migratedSqliteFile(
+      new URL('../prisma/migrations/', import.meta.url),
+      'facilitator.db',
+    );
     const first = await openDatabase(file);
     cleanups.push(() => first.$disconnect());
     await expect(openDatabase(file)).rejects.toBeInstanceOf(StoreLockedError);
@@ -208,7 +199,10 @@ describe('Prisma database', () => {
 
 describe('channel packages at rest (Prisma store)', () => {
   it('are encrypted in the database and every read is journaled', async () => {
-    const file = migratedFile();
+    const file = migratedSqliteFile(
+      new URL('../prisma/migrations/', import.meta.url),
+      'facilitator.db',
+    );
     const prisma = await openDatabase(file);
     cleanups.push(() => prisma.$disconnect());
     const batch = new PrismaBatchStore(prisma, PackageCipher.fromKey(randomBytes(32)));
@@ -229,7 +223,10 @@ describe('channel packages at rest (Prisma store)', () => {
   });
 
   it('a different key cannot read them (fail closed)', async () => {
-    const file = migratedFile();
+    const file = migratedSqliteFile(
+      new URL('../prisma/migrations/', import.meta.url),
+      'facilitator.db',
+    );
     const prisma = await openDatabase(file);
     cleanups.push(() => prisma.$disconnect());
     const res = await new PrismaBatchStore(

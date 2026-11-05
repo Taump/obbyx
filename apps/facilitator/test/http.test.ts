@@ -1,7 +1,5 @@
-import { Writable } from 'node:stream';
 import { HTTPFacilitatorClient } from '@x402/core/http';
 import type { PaymentPayload, PaymentRequirements } from '@x402/core/types';
-import { createLogger } from '@obbyx/obyte/logger';
 import { SqliteSettlementStore } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { declareDiscoveryExtension } from '@x402/extensions/bazaar';
@@ -15,6 +13,7 @@ import {
   addressOf,
   composeTestUnit,
   testKey,
+  silentLogger,
 } from '../../../packages/obyte/test/helpers.js';
 import { failOnce } from '../../../packages/x402-obyte/test/fail-once.js';
 import { FakeHub } from '../../../packages/x402-obyte/test/fake-hub.js';
@@ -24,7 +23,7 @@ const NET = 'obyte:testnet';
 const payerKey = testKey('payer');
 const payer = addressOf(payerKey);
 const seller = addressOf(testKey('seller'));
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 
 const requirements: PaymentRequirements = {
   scheme: 'exact',

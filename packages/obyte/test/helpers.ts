@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { Writable } from 'node:stream';
 import obyte from 'obyte';
 import {
   getBase64Hash,
@@ -8,6 +13,28 @@ import {
   toPublicKey,
 } from 'obyte/lib/internal.js';
 import { expectedCommissions } from '../src/unit/exact-unit.js';
+import { type Logger, createLogger } from '../src/logger/index.js';
+
+/**
+ * A fresh SQLite file with every Prisma migration of `migrationsDir` applied
+ * in order (what `prisma migrate deploy` does).
+ */
+export function migratedSqliteFile(migrationsDir: URL, name: string): string {
+  const file = join(mkdtempSync(join(tmpdir(), 'obbyx-db-')), name);
+  const db = new DatabaseSync(file);
+  for (const m of readdirSync(migrationsDir.pathname)
+    .filter((d) => !d.endsWith('.toml'))
+    .sort()) {
+    db.exec(readFileSync(join(migrationsDir.pathname, m, 'migration.sql'), 'utf8'));
+  }
+  db.close();
+  return file;
+}
+
+/** A logger that formats every record (redaction included) and discards it. */
+export function silentLogger(): Logger {
+  return createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+}
 
 /** Deterministic throwaway private key for tests (never funded). */
 export function testKey(label: string): Uint8Array {

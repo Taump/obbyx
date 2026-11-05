@@ -6,7 +6,7 @@ import { OBYTE_NETWORKS, getNetwork } from '@obbyx/obyte';
 import { ConfigError, loadConfig } from '@obbyx/obyte/config';
 import { createLoggerFromEnv, moduleLogger } from '@obbyx/obyte/logger';
 import { loadWallet, walletPath } from '@obbyx/obyte/wallet';
-import { hubCall, startHeartbeat } from '@obbyx/x402-obyte';
+import { hubCall, parseBalances, startHeartbeat } from '@obbyx/x402-obyte';
 import { type WatcherEnv, watcherEnvSchema as schema } from './config.js';
 import { WatcherStore, openWatcherDatabase } from './storage/store.js';
 import { Defender } from './chain/defender.js';
@@ -67,11 +67,11 @@ async function main(): Promise<void> {
   let cachedBalance = 0n;
   const refreshBalance = async () => {
     const res = await hubCall(() => client.api.getBalances([wallet.address]), env.HUB_TIMEOUT_MS);
-    if (res.kind === 'ok') {
-      const b = (res.value as Record<string, Record<string, { stable: number; pending: number }>>)[
-        wallet.address
-      ]?.['base'];
-      cachedBalance = BigInt((b?.stable ?? 0) + (b?.pending ?? 0));
+    const balances = res.kind === 'ok' ? parseBalances(res.value, wallet.address) : undefined;
+    // Hub down or malformed answer: keep the last known value.
+    if (balances !== undefined) {
+      const base = balances['base'];
+      cachedBalance = base === undefined ? 0n : base.stable + base.pending;
     }
     return cachedBalance;
   };
@@ -120,7 +120,10 @@ async function main(): Promise<void> {
   link.start();
   const timer = setInterval(() => void defender.tick(), env.POLL_INTERVAL_MS);
 
+  let stopping = false;
   const shutdown = async (signal: string) => {
+    if (stopping) return; // a second signal must not close everything twice
+    stopping = true;
     log.info({ signal }, 'shutting down');
     clearInterval(timer);
     link.stop();

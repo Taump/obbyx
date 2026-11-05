@@ -5,7 +5,13 @@ import {
   decodePaymentSignatureHeader,
   encodePaymentSignatureHeader,
 } from '@x402/core/http';
-import type { PaymentPayload, PaymentRequirements, SettleResponse } from '@x402/core/types';
+import type {
+  PaymentPayload,
+  PaymentPayloadResult,
+  PaymentRequired,
+  PaymentRequirements,
+  SettleResponse,
+} from '@x402/core/types';
 import { ObbyxError } from '@obbyx/obyte';
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
 import type { BudgetReservation, SpendingBudget } from './budget.js';
@@ -84,59 +90,13 @@ export async function payingFetch(
     const required = response.headers.get('PAYMENT-REQUIRED');
     if (required === null)
       throw new ObbyxError('invalid_402', '402 without PAYMENT-REQUIRED header');
-    const offer = decodePaymentRequiredHeader(required);
-    // Offers in preference order (channel first). A channel that turns out to
-    // be unusable before anything is signed (not funded, closing, exhausted,
-    // busy) falls through to the next offer, normally `exact`.
-    let accepted: PaymentRequirements | undefined;
-    let result: Awaited<ReturnType<ExactObyteClient['createPaymentPayload']>> | undefined;
-    let lastChannelError: ObbyxError | undefined;
-    for (const candidate of chooseOffers(offer.accepts, options)) {
-      const mechanism =
-        candidate.scheme === BATCH_SCHEME ? options.mechanisms.batch : options.mechanisms.exact;
-      if (mechanism === undefined) continue;
-      log.info(
-        {
-          url,
-          scheme: candidate.scheme,
-          payTo: candidate.payTo,
-          asset: candidate.asset,
-          amount: candidate.amount,
-        },
-        'paying for request',
-      );
-      // Reserve the price BEFORE signing: concurrent calls cannot overshoot the budget.
-      reservation = options.budget?.reserve(candidate.asset, BigInt(candidate.amount));
-      try {
-        result = await mechanism.createPaymentPayload(2, candidate);
-        accepted = candidate;
-        break;
-      } catch (err) {
-        if (reservation) options.budget?.release(reservation); // nothing was signed or sent
-        reservation = undefined;
-        if (err instanceof ObbyxError && CHANNEL_UNUSABLE.has(err.code)) {
-          lastChannelError = err;
-          log.info(
-            { reason: err.code, detail: err.message },
-            'channel unusable; trying the next offer',
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (accepted === undefined || result === undefined) {
-      // Nothing else to pay with: report why the channel could not (e.g. payment_pending).
-      throw lastChannelError ?? new ObbyxError('no_acceptable_offer', 'No offer could be paid');
-    }
-    const payload: PaymentPayload = {
-      x402Version: 2,
-      resource: offer.resource,
-      accepted,
-      payload: result.payload,
-      ...(offer.extensions ? { extensions: withPaymentId(offer.extensions, init.paymentId) } : {}),
-    };
-    header = encodePaymentSignatureHeader(payload);
+    ({ header, reservation } = await signPayment(
+      decodePaymentRequiredHeader(required),
+      init.paymentId,
+      url,
+      options,
+      log,
+    ));
     response = await request(header);
   }
 
@@ -144,16 +104,7 @@ export async function payingFetch(
   for (;;) {
     const settle = readSettle(response);
     if (response.status !== 402 || settle?.errorReason !== 'settlement_pending') {
-      const accepted = acceptedOf(header);
-      if (accepted?.scheme === BATCH_SCHEME) options.mechanisms.batch?.onSettled(accepted, settle);
-      if (reservation !== undefined && options.budget !== undefined) {
-        // I7: spend on success; release ONLY on a definite refusal (402: the
-        // payment was not used). Anything else (5xx, 409, no settlement info)
-        // is an unknown outcome: the reservation stays counted.
-        if (settle?.success === true || (response.ok && settle === undefined))
-          options.budget.spend(reservation);
-        else if (response.status === 402) options.budget.release(reservation);
-      }
+      recordOutcome(response, settle, header, reservation, options);
       return { response, ...(settle ? { payment: settle } : {}), paymentHeader: header };
     }
     if (Date.now() > deadline) throw new PaymentPendingError(header, settle.transaction);
@@ -166,6 +117,87 @@ export async function payingFetch(
     await response.body?.cancel();
     await new Promise((r) => setTimeout(r, wait));
     response = await request(header);
+  }
+}
+
+/**
+ * Signs a payment for the first usable offer, in preference order (channel
+ * first). A channel that turns out to be unusable before anything is signed
+ * (not funded, closing, exhausted, busy) falls through to the next offer,
+ * normally `exact`. The price is reserved in the budget BEFORE signing, so
+ * concurrent calls cannot overshoot it.
+ */
+async function signPayment(
+  offer: PaymentRequired,
+  paymentId: string | undefined,
+  url: string,
+  options: PayingFetchOptions,
+  log: Logger,
+): Promise<{ header: string; reservation: BudgetReservation | undefined }> {
+  let lastChannelError: ObbyxError | undefined;
+  for (const candidate of chooseOffers(offer.accepts, options)) {
+    const mechanism =
+      candidate.scheme === BATCH_SCHEME ? options.mechanisms.batch : options.mechanisms.exact;
+    if (mechanism === undefined) continue;
+    log.info(
+      {
+        url,
+        scheme: candidate.scheme,
+        payTo: candidate.payTo,
+        asset: candidate.asset,
+        amount: candidate.amount,
+      },
+      'paying for request',
+    );
+    const reservation = options.budget?.reserve(candidate.asset, BigInt(candidate.amount));
+    let result: PaymentPayloadResult;
+    try {
+      result = await mechanism.createPaymentPayload(2, candidate);
+    } catch (err) {
+      if (reservation) options.budget?.release(reservation); // nothing was signed or sent
+      if (err instanceof ObbyxError && CHANNEL_UNUSABLE.has(err.code)) {
+        lastChannelError = err;
+        log.info(
+          { reason: err.code, detail: err.message },
+          'channel unusable; trying the next offer',
+        );
+        continue;
+      }
+      throw err;
+    }
+    const payload: PaymentPayload = {
+      x402Version: 2,
+      resource: offer.resource,
+      accepted: candidate,
+      payload: result.payload,
+      ...(offer.extensions ? { extensions: withPaymentId(offer.extensions, paymentId) } : {}),
+    };
+    return { header: encodePaymentSignatureHeader(payload), reservation };
+  }
+  // Nothing else to pay with: report why the channel could not (e.g. payment_pending).
+  throw lastChannelError ?? new ObbyxError('no_acceptable_offer', 'No offer could be paid');
+}
+
+/**
+ * Applies the final answer: the channel voucher is confirmed or released, and
+ * the budget reservation is spent on success and released ONLY on a definite
+ * refusal (402: the payment was not used). Anything else (5xx, 409, no
+ * settlement info) is an unknown outcome: the reservation stays counted (I7).
+ */
+function recordOutcome(
+  response: Response,
+  settle: SettleResponse | undefined,
+  header: string,
+  reservation: BudgetReservation | undefined,
+  options: PayingFetchOptions,
+): void {
+  const accepted = acceptedOf(header);
+  if (accepted?.scheme === BATCH_SCHEME) options.mechanisms.batch?.onSettled(accepted, settle);
+  if (reservation === undefined || options.budget === undefined) return;
+  if (settle?.success === true || (response.ok && settle === undefined)) {
+    options.budget.spend(reservation);
+  } else if (response.status === 402) {
+    options.budget.release(reservation);
   }
 }
 

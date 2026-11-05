@@ -1,19 +1,16 @@
-import { Writable } from 'node:stream';
 import type { PaymentRequirements } from '@x402/core/types';
 import { CHANNEL_BASE_AA, OBYTE_NETWORKS } from '@obbyx/obyte';
-import { createLogger } from '@obbyx/obyte/logger';
-import obyte from 'obyte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { BatchObyteClient } from '../src/batch/client.js';
 import { ClientChannelStore } from '../src/batch/client-store.js';
 import { BATCH_REASONS } from '../src/batch/requirements.js';
-import { addressOf, testKey } from '../../obyte/test/helpers.js';
+import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { FakeHub } from './fake-hub.js';
 
 const NET = OBYTE_NETWORKS.testnet;
 const seller = addressOf(testKey('seller'));
 const AA = 'A'.repeat(32);
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 const req = (binding: string): PaymentRequirements => ({
   scheme: 'batch-settlement',
   network: NET.caip2,
@@ -36,9 +33,7 @@ let client: BatchObyteClient;
 beforeEach(() => {
   const hub = new FakeHub();
   hub.aaVars.set(AA, { period: 1, balanceB: 1_000_000 });
-  const c = new obyte.Client('ws://127.0.0.1:9', { testnet: true });
-  c.close();
-  Object.assign((c as unknown as { api: object }).api, hub.client.api);
+  const c = hub.obyteClient();
   store = new ClientChannelStore(':memory:');
   store.add({
     network: NET.caip2,

@@ -1,4 +1,6 @@
-import { ObbyxError, fromDisplay } from '@obbyx/obyte';
+import type obyte from 'obyte';
+import { ObbyxError, type ObyteNetwork, fromDisplay } from '@obbyx/obyte';
+import type { Logger } from '@obbyx/obyte/logger';
 import { loadWallet } from '@obbyx/obyte/wallet';
 import { BatchObyteClient, ClientChannelStore, ExactObyteClient } from '@obbyx/x402-obyte';
 import { PaymentPendingError, payingFetch } from '@obbyx/sdk';
@@ -71,32 +73,7 @@ export function payCommand({ out, err, done }: CommandContext): Cmd<PayArgs> {
       const logger = cliLogger();
       const client = connect(network, a.hub);
       try {
-        const composer = reservingComposer(client, network, wallet.address, logger);
-        const mechanism = new ExactObyteClient({
-          client,
-          network: network.caip2,
-          privateKey: wallet.privateKey,
-          logger,
-          composer,
-          maxFee,
-        });
-        // Use a payment channel to this seller when one is open (instant, no fee per call).
-        const batch = new BatchObyteClient({
-          client,
-          network,
-          privateKey: wallet.privateKey,
-          store: new ClientChannelStore(channelStorePath(network)),
-          logger,
-          maxAmount: new Map([['base', max]]),
-          composer,
-        });
-        const headers: Record<string, string> = {};
-        for (const h of a.header ?? []) {
-          const i = h.indexOf(':');
-          if (i <= 0) throw new ObbyxError('usage', `Bad --header "${h}" (expected "Name: value")`);
-          headers[h.slice(0, i).trim()] = h.slice(i + 1).trim();
-        }
-        if (a.data !== undefined) headers['content-type'] ??= 'application/json';
+        const headers = parseHeaders(a.header ?? [], a.data !== undefined);
         const method = a.method ?? (a.data === undefined ? 'GET' : 'POST');
         try {
           const result = await payingFetch(
@@ -108,7 +85,7 @@ export function payCommand({ out, err, done }: CommandContext): Cmd<PayArgs> {
               ...(a.payment === undefined ? {} : { paymentHeader: a.payment }),
             },
             {
-              mechanisms: { exact: mechanism, batch },
+              mechanisms: mechanisms({ client, network, wallet, max, maxFee, logger }),
               network: network.caip2,
               maxAmount: new Map([['base', max]]),
               logger,
@@ -131,5 +108,61 @@ export function payCommand({ out, err, done }: CommandContext): Cmd<PayArgs> {
         client.close();
       }
     },
+  };
+}
+
+/** `--header 'Name: value'` options; a body defaults to JSON. */
+function parseHeaders(list: readonly string[], hasBody: boolean): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const h of list) {
+    const i = h.indexOf(':');
+    if (i <= 0) throw new ObbyxError('usage', `Bad --header "${h}" (expected "Name: value")`);
+    headers[h.slice(0, i).trim()] = h.slice(i + 1).trim();
+  }
+  if (hasBody) headers['content-type'] ??= 'application/json';
+  return headers;
+}
+
+/**
+ * The wallet's payment mechanisms: an open channel to the seller first
+ * (instant, no fee per call), otherwise an on-chain unit. One coin composer
+ * for both, so concurrent payments never pick the same coins.
+ */
+function mechanisms({
+  client,
+  network,
+  wallet,
+  max,
+  maxFee,
+  logger,
+}: {
+  client: obyte.Client;
+  network: ObyteNetwork;
+  wallet: { address: string; privateKey: Uint8Array };
+  /** Most this call may cost (atomic units of bytes). */
+  max: bigint;
+  /** Most network fee an on-chain payment may cost (bytes). */
+  maxFee: bigint;
+  logger: Logger;
+}): { exact: ExactObyteClient; batch: BatchObyteClient } {
+  const composer = reservingComposer(client, network, wallet.address, logger);
+  return {
+    exact: new ExactObyteClient({
+      client,
+      network: network.caip2,
+      privateKey: wallet.privateKey,
+      logger,
+      composer,
+      maxFee,
+    }),
+    batch: new BatchObyteClient({
+      client,
+      network,
+      privateKey: wallet.privateKey,
+      store: new ClientChannelStore(channelStorePath(network)),
+      logger,
+      maxAmount: new Map([['base', max]]),
+      composer,
+    }),
   };
 }

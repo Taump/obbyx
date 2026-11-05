@@ -107,5 +107,7 @@ export {
   parseHistory,
   parseLedgerUnit,
   parseStateVars,
+  type AssetBalance,
+  parseBalances,
 } from './hub/schemas.js';
 export { KeyedQueue } from './util/keyed-queue.js';

@@ -9,7 +9,11 @@ import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
 import type obyte from 'obyte';
 import type { ReservingComposer } from '../coins/index.js';
 import { type PaymentRequirementsV1, requirementsV1ToV2 } from './facilitator-v1.js';
-import { EXACT_SCHEME, parseExactRequirements } from './requirements.js';
+import {
+  EXACT_SCHEME,
+  type ParsedExactRequirements,
+  parseExactRequirements,
+} from './requirements.js';
 
 /**
  * Client side of `exact` on Obyte: composes and signs (but does NOT
@@ -55,6 +59,36 @@ export class ExactObyteClient implements SchemeNetworkClient {
     requirements: PaymentRequirements,
     context?: PaymentPayloadContext,
   ): Promise<PaymentPayloadResult> {
+    const req = this.acceptable(x402Version, requirements, context);
+    const unit = await this.signUnit(req);
+    this.log.info(
+      {
+        proofId: unit['unit'],
+        payTo: req.payTo,
+        asset: req.asset,
+        amount: req.amount.toString(),
+        binding: req.extra.binding,
+      },
+      'payment unit signed (not broadcast)',
+    );
+    // v1: the mechanism returns the complete payload (core passes it through as-is).
+    if (x402Version === 1) {
+      return {
+        x402Version: 1,
+        scheme: EXACT_SCHEME,
+        network: requirements.network,
+        payload: { unit },
+      } as unknown as PaymentPayloadResult;
+    }
+    return { x402Version, payload: { unit } };
+  }
+
+  /** The requirements, if this client may pay them (network, limits, offer still valid). */
+  private acceptable(
+    x402Version: number,
+    requirements: PaymentRequirements,
+    context: PaymentPayloadContext | undefined,
+  ): ParsedExactRequirements {
     if (x402Version !== 1 && x402Version !== 2) {
       throw new ObbyxError('invalid_x402_version', 'Only x402 v1 and v2 are supported');
     }
@@ -85,7 +119,14 @@ export class ExactObyteClient implements SchemeNetworkClient {
     if (req.extra.validUntil < Math.floor(Date.now() / 1000)) {
       throw new ObbyxError('quote_expired', 'The payment offer has expired');
     }
+    return req;
+  }
 
+  /**
+   * Composes and signs (never broadcasts) the unit: one output to payTo and the
+   * binding in a data message. Refuses it when the network fee is above the limit.
+   */
+  private async signUnit(req: ParsedExactRequirements): Promise<Record<string, unknown>> {
     const output = { address: req.payTo, amount: toSafeNumber(req.amount) };
     const payment =
       req.asset === 'base'
@@ -95,7 +136,6 @@ export class ExactObyteClient implements SchemeNetworkClient {
       app: 'data',
       payload: { x402: { binding: req.extra.binding, quoteId: req.extra.quoteId } },
     };
-
     const compose = () =>
       this.options.client.compose.message('multi', [payment, data] as never, {
         privateKey: this.options.privateKey,
@@ -120,25 +160,6 @@ export class ExactObyteClient implements SchemeNetworkClient {
         `Network fee ${fee} exceeds the limit ${this.options.maxFee} bytes`,
       );
     }
-    this.log.info(
-      {
-        proofId: unit['unit'],
-        payTo: req.payTo,
-        asset: req.asset,
-        amount: req.amount.toString(),
-        binding: req.extra.binding,
-      },
-      'payment unit signed (not broadcast)',
-    );
-    // v1: the mechanism returns the complete payload (core passes it through as-is).
-    if (x402Version === 1) {
-      return {
-        x402Version: 1,
-        scheme: EXACT_SCHEME,
-        network: requirements.network,
-        payload: { unit },
-      } as unknown as PaymentPayloadResult;
-    }
-    return { x402Version, payload: { unit } };
+    return unit;
   }
 }

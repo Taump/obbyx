@@ -1,8 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
 import { Writable } from 'node:stream';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import obyte from 'obyte';
 import { OBYTE_NETWORKS, channelAddress, channelDefinition } from '@obbyx/obyte';
@@ -16,6 +12,8 @@ import {
   HASH_C,
   addressOf,
   testKey,
+  silentLogger,
+  migratedSqliteFile,
 } from '../../../packages/obyte/test/helpers.js';
 import { FakeHub } from '../../../packages/x402-obyte/test/fake-hub.js';
 import { WatcherStore, openWatcherDatabase } from '../src/storage/store.js';
@@ -29,20 +27,7 @@ const clientKey = testKey('client');
 const client = addressOf(clientKey);
 const params = { addressA: seller, addressB: client, asset: 'base', salt: 'w1', timeout: 3600 };
 const AA = channelAddress(params);
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
-
-function migratedFile(): string {
-  const file = join(mkdtempSync(join(tmpdir(), 'obbyx-watcher-')), 'watcher.db');
-  const db = new DatabaseSync(file);
-  const dir = new URL('../prisma/migrations/', import.meta.url).pathname;
-  for (const m of readdirSync(dir)
-    .filter((d) => !d.endsWith('.toml'))
-    .sort()) {
-    db.exec(readFileSync(join(dir, m, 'migration.sql'), 'utf8'));
-  }
-  db.close();
-  return file;
-}
+const silent = silentLogger();
 
 /** obyte.js client answered by the FakeHub, composing units offline for the seller. */
 function offlineClient(hub: FakeHub): obyte.Client {
@@ -134,7 +119,11 @@ beforeEach(async () => {
   });
   gateway.attach(http.server);
   const base = (await http.listen({ host: '127.0.0.1', port: 0 })).replace('http', 'ws');
-  store = new WatcherStore(await openWatcherDatabase(migratedFile()));
+  store = new WatcherStore(
+    await openWatcherDatabase(
+      migratedSqliteFile(new URL('../prisma/migrations/', import.meta.url), 'watcher.db'),
+    ),
+  );
   link = new FacilitatorLink({
     url: `${base}/watcher`,
     network: NET,

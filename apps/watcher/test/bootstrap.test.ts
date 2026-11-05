@@ -1,10 +1,9 @@
-import { Writable } from 'node:stream';
-import { createLogger } from '@obbyx/obyte/logger';
 import { describe, expect, it } from 'vitest';
 import { createBootstrap } from '../src/chain/bootstrap.js';
 import type { WatcherStore } from '../src/storage/store.js';
+import { silentLogger } from '../../../packages/obyte/test/helpers.js';
 
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 
 /** Mimics obyte.js: subscriptions are dropped on every (re)connection. */
 function fakeClient() {

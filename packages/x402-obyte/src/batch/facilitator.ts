@@ -186,8 +186,7 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
     channelKey: string,
     network: Network,
   ): Promise<SettleResponse> {
-    const store = this.options.store;
-    let commitment = await store.commitmentByHash(c.packageHash);
+    let commitment = await this.options.store.commitmentByHash(c.packageHash);
     if (commitment !== undefined && commitment.binding !== c.voucher.binding) {
       return failure(
         network,
@@ -196,96 +195,123 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
       );
     }
     if (commitment === undefined) {
-      const appended = await store.appendPending({
-        channelKey,
-        network: c.req.network.caip2,
-        aa: c.voucher.aa_address,
-        payTo: c.req.payTo,
-        payer: c.payer,
-        asset: c.req.asset,
-        period: c.voucher.period,
-        amountSpent: BigInt(c.voucher.amount_spent),
-        paymentAmount: BigInt(c.voucher.payment_amount),
-        binding: c.voucher.binding,
-        packageHash: c.packageHash,
-        packageJson: c.packageJson,
-      });
-      if (!appended.ok) {
-        const reason =
-          appended.reason === 'channel_busy'
-            ? R.busy
-            : appended.reason === 'period_mismatch'
-              ? R.period
-              : R.cumulative;
-        await this.emit({
-          key: channelKey,
-          kind: 'voucher_refused',
-          data: {
-            reason,
-            amountSpent: c.voucher.amount_spent,
-            committed: appended.committed.toString(),
-          },
-        });
-        return {
-          ...failure(network, reason, `Voucher rejected: ${appended.reason}`),
-          extra: { chargedCumulativeAmount: appended.committed.toString() },
-        };
-      }
-      commitment = appended.commitment;
-      await this.emit({
-        key: channelKey,
-        kind: 'voucher_pending',
-        data: {
-          seq: commitment.seq,
-          period: commitment.period,
-          amountSpent: commitment.amountSpent.toString(),
-        },
-      });
-      this.log.info(
-        { seq: commitment.seq, amountSpent: commitment.amountSpent.toString() },
-        'voucher pending',
-      );
+      const appended = await this.append(c, channelKey, network);
+      if ('success' in appended) return appended;
+      commitment = appended;
     }
-
     if (commitment.state === 'pending') {
-      const delivered = await this.options.gateway.deliver(commitment, this.ackTimeoutMs);
-      if (delivered !== 'acked') {
-        // Stored here but not yet confirmed by the seller's watcher: the outcome
-        // is unknown to the client → settlement_pending (x402: non-empty
-        // transaction), retried with the SAME voucher. Distinct from the
-        // definite refusal `…_watcher_unavailable` at verification.
-        this.log.warn(
-          { seq: commitment.seq },
-          'watcher did not ack in time; voucher stays pending',
-        );
-        await this.emit({ key: channelKey, kind: 'ack_timeout', data: { seq: commitment.seq } });
-        return {
-          success: false,
-          errorReason: 'settlement_pending',
-          errorMessage:
-            "Waiting for the seller's watcher to store this voucher; retry with the same voucher",
-          transaction: commitmentIdOf(network, commitment),
-          network,
-          payer: c.payer,
-        };
-      }
-      commitment =
-        (await store.commit(commitment.seq, {
-          payTo: commitment.payTo,
-          network: commitment.network,
-        })) ?? commitment;
-      this.log.info({ seq: commitment.seq }, 'voucher committed (watcher ack)');
-      await this.emit({
-        key: channelKey,
-        kind: 'voucher_committed',
-        data: {
-          seq: commitment.seq,
-          period: commitment.period,
-          amountSpent: commitment.amountSpent.toString(),
-        },
-      });
+      const committed = await this.handToWatcher(c, commitment, channelKey, network);
+      if ('success' in committed) return committed;
+      commitment = committed;
     }
     return this.success(network, c, commitment);
+  }
+
+  /**
+   * Appends the voucher to the channel journal as pending. The store enforces
+   * committed + price, the period and one voucher in flight per channel; a
+   * refusal reports the committed amount so an honest client can resync.
+   */
+  private async append(
+    c: Authenticated,
+    channelKey: string,
+    network: Network,
+  ): Promise<CommitmentRow | SettleResponse> {
+    const appended = await this.options.store.appendPending({
+      channelKey,
+      network: c.req.network.caip2,
+      aa: c.voucher.aa_address,
+      payTo: c.req.payTo,
+      payer: c.payer,
+      asset: c.req.asset,
+      period: c.voucher.period,
+      amountSpent: BigInt(c.voucher.amount_spent),
+      paymentAmount: BigInt(c.voucher.payment_amount),
+      binding: c.voucher.binding,
+      packageHash: c.packageHash,
+      packageJson: c.packageJson,
+    });
+    if (!appended.ok) {
+      const reason =
+        appended.reason === 'channel_busy'
+          ? R.busy
+          : appended.reason === 'period_mismatch'
+            ? R.period
+            : R.cumulative;
+      await this.emit({
+        key: channelKey,
+        kind: 'voucher_refused',
+        data: {
+          reason,
+          amountSpent: c.voucher.amount_spent,
+          committed: appended.committed.toString(),
+        },
+      });
+      return {
+        ...failure(network, reason, `Voucher rejected: ${appended.reason}`),
+        extra: { chargedCumulativeAmount: appended.committed.toString() },
+      };
+    }
+    const commitment = appended.commitment;
+    await this.emit({
+      key: channelKey,
+      kind: 'voucher_pending',
+      data: {
+        seq: commitment.seq,
+        period: commitment.period,
+        amountSpent: commitment.amountSpent.toString(),
+      },
+    });
+    this.log.info(
+      { seq: commitment.seq, amountSpent: commitment.amountSpent.toString() },
+      'voucher pending',
+    );
+    return commitment;
+  }
+
+  /**
+   * Delivers a pending voucher to the seller's watcher and commits it on its
+   * ack. Without the ack the voucher is stored here but not confirmed by the
+   * watcher: the outcome is unknown to the client → settlement_pending (x402:
+   * non-empty transaction), retried with the SAME voucher. Distinct from the
+   * definite refusal `…_watcher_unavailable` at verification.
+   */
+  private async handToWatcher(
+    c: Authenticated,
+    pending: CommitmentRow,
+    channelKey: string,
+    network: Network,
+  ): Promise<CommitmentRow | SettleResponse> {
+    const delivered = await this.options.gateway.deliver(pending, this.ackTimeoutMs);
+    if (delivered !== 'acked') {
+      this.log.warn({ seq: pending.seq }, 'watcher did not ack in time; voucher stays pending');
+      await this.emit({ key: channelKey, kind: 'ack_timeout', data: { seq: pending.seq } });
+      return {
+        success: false,
+        errorReason: 'settlement_pending',
+        errorMessage:
+          "Waiting for the seller's watcher to store this voucher; retry with the same voucher",
+        transaction: commitmentIdOf(network, pending),
+        network,
+        payer: c.payer,
+      };
+    }
+    const commitment =
+      (await this.options.store.commit(pending.seq, {
+        payTo: pending.payTo,
+        network: pending.network,
+      })) ?? pending;
+    this.log.info({ seq: commitment.seq }, 'voucher committed (watcher ack)');
+    await this.emit({
+      key: channelKey,
+      kind: 'voucher_committed',
+      data: {
+        seq: commitment.seq,
+        period: commitment.period,
+        amountSpent: commitment.amountSpent.toString(),
+      },
+    });
+    return commitment;
   }
 
   private success(

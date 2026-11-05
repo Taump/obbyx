@@ -1,13 +1,12 @@
-import { Writable } from 'node:stream';
 import { HTTPFacilitatorClient } from '@x402/core/http';
-import { createLogger } from '@obbyx/obyte/logger';
 import { SqliteSettlementStore } from '@obbyx/x402-obyte';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadFacilitatorConfig } from '../src/config.js';
 import { type FacilitatorApp, buildFacilitator } from '../src/http/server.js';
 import { FakeHub } from '../../../packages/x402-obyte/test/fake-hub.js';
+import { silentLogger } from '../../../packages/obyte/test/helpers.js';
 
-const silent = createLogger({ destination: new Writable({ write: (_c, _e, cb) => cb() }) });
+const silent = silentLogger();
 let app: FacilitatorApp;
 const make = (env: Record<string, string>) => {
   app = buildFacilitator({
