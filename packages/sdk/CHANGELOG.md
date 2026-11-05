@@ -1,5 +1,24 @@
 # @obbyx/sdk
 
+## 0.3.0
+
+### Minor Changes
+
+- Security (seller paywall and buyer client).
+
+  - payment-identifier: a stored response is replayed only to a payment that verifies and comes from the payer of the original; a known id alone is no longer enough. Answers 503 (not 409) when the facilitator is unreachable.
+  - The paywall pins `maxTimeoutSeconds` and `paymentFlow` of the client's `accepted` terms to its own offer.
+  - **Behaviour change:** `payingFetch` no longer releases the budget reservation on a 402 for an `exact` payment (the seller still holds a signed unit and the 402 is not authenticated). It still does for channel vouchers.
+  - A non-numeric `Retry-After` falls back to 5 s instead of retrying every ~1 ms.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @obbyx/x402-obyte@0.3.0
+  - @obbyx/obyte@0.2.0
+
 ## 0.2.1
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @obbyx/obyte
 
+## 0.2.0
+
+### Minor Changes
+
+- - `validateExactUnit` rejects a payload obyte.js cannot hash (null, empty object or array) with `invalid_exact_obyte_payload_hash` instead of throwing.
+  - Logger redaction also covers `wif` and `packageJson`.
+  - New config helpers in `@obbyx/obyte/config`: `envFlag` / `flagOn`, `hubUrlSchema`, `MAX_TIMER_MS`.
+
 ## 0.1.2
 
 ### Patch Changes

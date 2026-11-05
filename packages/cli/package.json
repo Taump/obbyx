@@ -1,6 +1,6 @@
 {
   "name": "@obbyx/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "obbyx command line: Obyte wallet, testnet faucet, paying x402 APIs, payment channels, diagnostics",
   "keywords": [
     "x402",

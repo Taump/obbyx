@@ -1,5 +1,28 @@
 # @obbyx/x402-obyte
 
+## 0.3.0
+
+### Minor Changes
+
+- Security (buyer): never under-declare on channel close.
+
+  - `ClientChannelStore` tracks `maxSigned`, the highest `amount_spent` signed in the current period; the seller's unauthenticated answers never lower it. Existing databases are migrated on open.
+  - `obbyx channel close` declares `maxSigned` instead of the last confirmed amount. Declaring less than any voucher the seller holds let the seller take the whole channel with a fraud proof.
+  - `ExactObyteClient` refuses offers valid for more than `maxQuoteTtlSeconds` (default 3600) with `quote_too_long`: a far-future `validUntil` could lock the wallet's coins.
+  - `canonical()` sorts keys by code units instead of `localeCompare` (no ICU dependency). Binding HMACs and package hashes are unchanged (pinned by golden vectors); request-body hashes may differ for some key sets.
+
+- Security: seller-signed watcher receipts and voucher cancellation.
+
+  - **Breaking (watcher protocol v2):** `ack` and the new `nack` carry a `receipt` signed by the seller over `{purpose, network, seq, packageHash}`; `hello` carries `protocol: 2`. A bare `{type: 'ack', seq}` is no longer accepted, so a relay of the `/watcher` socket can no longer fake a stored voucher. Upgrade the facilitator first, then the watcher.
+  - **Breaking (`BatchStore`):** `commit(seq, owner)` now requires `owner.packageHash`; new `cancel(seq, owner)` and journal state `cancelled` (final; the channel is released). `WatcherGateway.deliver` returns a `DeliveryOutcome` (`acked` | `refused` | `timeout`). New reason `invalid_batch_settlement_obyte_voucher_refused`.
+  - `verify` no longer refuses a voucher that is already in the journal (quote expiry, watcher health): it may still be committed.
+  - New exports: `packageHashOf`, `voucherPackageOf`, `receiptMessage`, `verifyWatcherReceipt`, `WATCHER_PROTOCOL_VERSION`, `ownedBy`, `CommitmentOwner`, `DeliveryOutcome`.
+
+### Patch Changes
+
+- Updated dependencies
+  - @obbyx/obyte@0.2.0
+
 ## 0.2.2
 
 ### Patch Changes

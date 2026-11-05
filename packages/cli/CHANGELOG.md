@@ -1,5 +1,24 @@
 # @obbyx/cli
 
+## 0.1.5
+
+### Patch Changes
+
+- Security (buyer): never under-declare on channel close.
+
+  - `ClientChannelStore` tracks `maxSigned`, the highest `amount_spent` signed in the current period; the seller's unauthenticated answers never lower it. Existing databases are migrated on open.
+  - `obbyx channel close` declares `maxSigned` instead of the last confirmed amount. Declaring less than any voucher the seller holds let the seller take the whole channel with a fraud proof.
+  - `ExactObyteClient` refuses offers valid for more than `maxQuoteTtlSeconds` (default 3600) with `quote_too_long`: a far-future `validUntil` could lock the wallet's coins.
+  - `canonical()` sorts keys by code units instead of `localeCompare` (no ICU dependency). Binding HMACs and package hashes are unchanged (pinned by golden vectors); request-body hashes may differ for some key sets.
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @obbyx/x402-obyte@0.3.0
+  - @obbyx/obyte@0.2.0
+  - @obbyx/sdk@0.3.0
+
 ## 0.1.4
 
 ### Patch Changes

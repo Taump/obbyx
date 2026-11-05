@@ -1,6 +1,6 @@
 {
   "name": "@obbyx/sdk",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Accept and make x402 payments on Obyte: Express paywall, adapter for the official @x402 servers, paying fetch with spending budgets",
   "keywords": [
     "x402",
