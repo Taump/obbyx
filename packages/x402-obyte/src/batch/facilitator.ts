@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
   Network,
   PaymentPayload,
@@ -22,6 +21,7 @@ import { hubCall } from '../hub/hub-call.js';
 import { KeyedQueue } from '../util/keyed-queue.js';
 import { parseStateVars } from '../hub/schemas.js';
 import type { WatcherGateway } from './gateway.js';
+import { packageHashOf } from './watcher-protocol.js';
 import {
   BATCH_REASONS as R,
   BATCH_SCHEME,
@@ -117,15 +117,23 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
     return withLogContext({ scheme: BATCH_SCHEME, network: requirements.network }, async () => {
-      const checked = await this.check(payload, requirements);
+      // Same split as settle(): a voucher already in the journal is the
+      // client's retry of a payment we hold, so live checks (quote expiry,
+      // watcher health, closing) must not refuse it — it may get committed.
+      const auth = await this.authenticate(payload, requirements);
+      const stored = auth.ok
+        ? await this.options.store.commitmentByHash(auth.value.packageHash)
+        : undefined;
+      const checked =
+        auth.ok && stored === undefined ? await this.newVoucherChecks(auth.value) : auth;
       if (!checked.ok) {
         this.log.info({ reason: checked.reason, detail: checked.message }, 'verify rejected');
         return { isValid: false, invalidReason: checked.reason, invalidMessage: checked.message };
       }
+      if (stored?.state === 'cancelled') return refusedVerify(stored);
       const c = checked.value;
       const channelKey = this.channelKey(c.req.network.caip2, c.voucher.aa_address);
-      const existing = await this.options.store.commitmentByHash(c.packageHash);
-      if (existing === undefined) {
+      if (stored === undefined) {
         const channel = await this.options.store.channel(channelKey);
         const committed = channel?.period === c.voucher.period ? channel.committed : 0n;
         if (channel?.period === c.voucher.period && channel.pendingSeq !== null) {
@@ -176,6 +184,7 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
     });
   }
 
+  /** Live checks for a voucher not yet in the journal: quote, watcher health, channel state, balance. */
   private async newVoucherChecks(a: Authenticated): Promise<Check<Checked>> {
     const live = await this.liveChecks(a);
     return live.ok ? { ok: true, value: { ...a, balance: live.value.balance } } : live;
@@ -204,6 +213,7 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
       if ('success' in committed) return committed;
       commitment = committed;
     }
+    if (commitment.state === 'cancelled') return refusedSettle(network, c.payer);
     return this.success(network, c, commitment);
   }
 
@@ -283,7 +293,20 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
     network: Network,
   ): Promise<CommitmentRow | SettleResponse> {
     const delivered = await this.options.gateway.deliver(pending, this.ackTimeoutMs);
-    if (delivered !== 'acked') {
+    if (delivered.kind === 'refused') {
+      this.log.warn({ seq: pending.seq, reason: delivered.reason }, 'watcher refused the voucher');
+      await this.emit({
+        key: channelKey,
+        kind: 'voucher_cancelled',
+        data: { seq: pending.seq, reason: delivered.reason },
+      });
+      return refusedSettle(network, c.payer, delivered.reason);
+    }
+    // The gateway committed the entry before reporting `acked`; re-read it so
+    // success is only ever reported for an entry that IS committed.
+    const commitment =
+      delivered.kind === 'acked' ? await this.options.store.commitment(pending.seq) : undefined;
+    if (commitment?.state !== 'committed') {
       this.log.warn({ seq: pending.seq }, 'watcher did not ack in time; voucher stays pending');
       await this.emit({ key: channelKey, kind: 'ack_timeout', data: { seq: pending.seq } });
       return {
@@ -296,11 +319,6 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
         payer: c.payer,
       };
     }
-    const commitment =
-      (await this.options.store.commit(pending.seq, {
-        payTo: pending.payTo,
-        network: pending.network,
-      })) ?? pending;
     this.log.info({ seq: commitment.seq }, 'voucher committed (watcher ack)');
     await this.emit({
       key: channelKey,
@@ -395,7 +413,7 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
         payer: verified.value.signer,
         channel: p,
         packageJson,
-        packageHash: createHash('sha256').update(packageJson).digest('hex'),
+        packageHash: packageHashOf(pkg),
       },
     };
   }
@@ -439,18 +457,6 @@ export class BatchObyteFacilitator implements SchemeNetworkFacilitator {
     return { ok: true, value: { balance } };
   }
 
-  /** Full verification of a new voucher. */
-  private async check(
-    payload: PaymentPayload,
-    requirements: PaymentRequirements,
-  ): Promise<Check<Checked>> {
-    const auth = await this.authenticate(payload, requirements);
-    if (!auth.ok) return auth;
-    const live = await this.liveChecks(auth.value);
-    if (!live.ok) return live;
-    return { ok: true, value: { ...auth.value, balance: live.value.balance } };
-  }
-
   private async channelParams(client: obyte.Client, aa: string): Promise<Check<ChannelParams>> {
     const cached = this.definitions.get(aa);
     if (cached !== undefined) return { ok: true, value: cached };
@@ -484,4 +490,24 @@ function commitmentIdOf(network: Network, c: CommitmentRow): string {
 
 function failure(network: Network, reason: string, message: string): SettleResponse {
   return { success: false, errorReason: reason, errorMessage: message, transaction: '', network };
+}
+
+/** A voucher the seller's watcher refused (signed nack): definite, the client may drop it. */
+function refusedSettle(network: Network, payer: string, reason?: string): SettleResponse {
+  return {
+    success: false,
+    errorReason: R.refused,
+    errorMessage: `The seller's watcher refused this voucher${reason ? `: ${reason}` : ''}`,
+    transaction: '',
+    network,
+    payer,
+  };
+}
+
+function refusedVerify(c: CommitmentRow): VerifyResponse {
+  return {
+    isValid: false,
+    invalidReason: R.refused,
+    invalidMessage: `The seller's watcher refused voucher ${c.seq}`,
+  };
 }

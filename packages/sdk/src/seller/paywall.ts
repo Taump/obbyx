@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import {
   type FacilitatorClient,
+  decodePaymentResponseHeader,
   decodePaymentSignatureHeader,
   encodePaymentRequiredHeader,
   encodePaymentResponseHeader,
@@ -24,10 +25,11 @@ import {
   BATCH_SCHEME,
   EXACT_SCHEME,
   batchExtraSchema,
-  canonical,
   exactExtraSchema,
+  packageHashOf,
+  voucherPackageOf,
 } from '@obbyx/x402-obyte';
-import { bindingsEqual, sha256Hex } from './binding.js';
+import { bindingsEqual } from './binding.js';
 import {
   PAYMENT_IDENTIFIER,
   decidePaymentId,
@@ -256,7 +258,12 @@ export class ObytePaywall {
       accepted.asset !== price.asset ||
       accepted.amount !== price.amount ||
       accepted.payTo !== this.options.payTo ||
+      // Terms outside the binding are pinned here: the facilitator compares
+      // the client's `accepted` with what we forward, i.e. with itself.
+      accepted.maxTimeoutSeconds !==
+        (this.options.maxTimeoutSeconds ?? DEFAULT_MAX_TIMEOUT_SECONDS) ||
       extra?.success !== true ||
+      extra.data.paymentFlow !== (route.flow === 'authorization' ? undefined : 'upfront') ||
       proofId === undefined ||
       (scheme === BATCH_SCHEME &&
         (extra.data as { minTimeout?: number }).minTimeout !==
@@ -315,7 +322,7 @@ export class ObytePaywall {
       res.status(402).json({ error: 'invalid_payment_reused' });
       return;
     }
-    if (this.paymentIdentifierAnswered(payment, created)) return;
+    if (await this.paymentIdentifierAnswered(payment, created)) return;
     if (created && payment.validUntil < this.now()) {
       store.forget(key, 'settling');
       return this.paymentRequired(payment, 'quote_expired');
@@ -349,7 +356,7 @@ export class ObytePaywall {
    * progress (never as "absent") and cannot take the id over. True when the
    * response was already sent (refused, or the stored response replayed).
    */
-  private paymentIdentifierAnswered(payment: Payment, created: boolean): boolean {
+  private async paymentIdentifierAnswered(payment: Payment, created: boolean): Promise<boolean> {
     const declared = this.options.paymentIdentifier;
     if (declared === undefined) return false;
     const store = this.options.store;
@@ -367,9 +374,44 @@ export class ObytePaywall {
       return true;
     }
     const original = store.get(decision.proofKey);
+    // The id alone is not a credential (ids leak, or are predictable): replay
+    // only to a VALID payment of the same payer that paid the original.
+    const same = await this.samePayer(payment, original?.paymentResponse ?? null);
+    if (same === 'unavailable') {
+      // Unknown, not a conflict: the buyer retries later with the same id.
+      payment.res.status(503).json({ error: 'facilitator_unavailable' });
+      return true;
+    }
+    if (!same) {
+      this.log.warn('payment-identifier repeat by another payer or with an invalid payment');
+      payment.res.status(409).json({ error: 'payment_identifier_conflict' });
+      return true;
+    }
     this.log.info('payment-identifier repeat: stored response, new payment NOT settled');
     this.send(payment.res, original?.response ?? null, original?.paymentResponse ?? null);
     return true;
+  }
+
+  /** Whether `payment` verifies and its payer is the payer of `paymentResponse`. */
+  private async samePayer(
+    payment: Payment,
+    paymentResponse: string | null,
+  ): Promise<boolean | 'unavailable'> {
+    if (paymentResponse === null) return false;
+    let originalPayer: string | undefined;
+    try {
+      originalPayer = decodePaymentResponseHeader(paymentResponse).payer;
+    } catch {
+      return false;
+    }
+    if (originalPayer === undefined) return false;
+    try {
+      const verified = await this.options.facilitator.verify(payment.payload, payment.accepted);
+      return verified.isValid && verified.payer === originalPayer;
+    } catch (err) {
+      this.log.warn({ err }, 'facilitator unreachable during payment-identifier check');
+      return 'unavailable';
+    }
   }
 
   /** upfront flow: settle to finality, then run the handler once. */
@@ -634,8 +676,8 @@ function proofIdOf(scheme: PaywallScheme, payload: PaymentPayload): string | und
     const hash = (payload.payload?.['unit'] as { unit?: unknown } | undefined)?.unit;
     return typeof hash === 'string' ? hash : undefined;
   }
-  const pkg = payload.payload?.['signedPackage'];
-  return pkg !== null && typeof pkg === 'object' ? sha256Hex(canonical(pkg)) : undefined;
+  const pkg = voucherPackageOf(payload.payload);
+  return pkg === undefined ? undefined : packageHashOf(pkg);
 }
 
 function toStored(result: PaidResult): StoredResponse {

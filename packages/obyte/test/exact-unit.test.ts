@@ -124,6 +124,14 @@ describe('validateExactUnit — every check holds on its own', () => {
       R.payloadHash,
     ],
     [
+      'payload with a null value (obyte.js cannot hash it): rejected, never thrown',
+      (u) => {
+        u.messages.find((m: U) => m.app === 'data').payload.x402.binding = null;
+        return u;
+      },
+      R.payloadHash,
+    ],
+    [
       'payload changed with new payload_hash but old unit hash',
       (u) => {
         payment(u).payload.outputs.find((o: U) => o.address !== seller).amount -= 1;

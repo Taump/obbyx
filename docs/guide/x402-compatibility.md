@@ -106,7 +106,7 @@ server.register(
     sellerId: 'api',
     secret: SELLER_SECRET,
     proofs,
-    minChannelTimeoutSeconds: 3600,
+    minChannelTimeoutSeconds: 14_400,
   }),
 );
 // route: accepts: { scheme: 'batch-settlement', network: 'obyte:testnet', payTo, price: '100 bytes' }

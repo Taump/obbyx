@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyRequest } from 'fastify';
 
 /**
  * Protection of the externally reachable facilitator endpoints `/verify` and
@@ -79,6 +79,3 @@ export function rejectionBody(
     ? { success: false, errorReason: reason, transaction: '', network }
     : { isValid: false, invalidReason: reason };
 }
-
-export type AccessGuard = ReturnType<typeof createAccessGuard>;
-export type { FastifyReply };

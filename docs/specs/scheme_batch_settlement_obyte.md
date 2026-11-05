@@ -102,8 +102,12 @@ failure for a voucher the seller may still redeem).
 
 The facilitator appends the voucher to the seller's journal (`pending`,
 monotonic `seq`) atomically with the per-channel lock, pushes it to the
-seller's watcher, and commits it when the watcher acks `seq` (the ack is
-ownership-checked: a watcher acks only its own seller's vouchers). Stored
+seller's watcher, and commits it when the watcher acks it, or cancels it when
+the watcher nacks it. Both answers carry a receipt signed by the seller over
+`{purpose, network, seq, packageHash}` (`packageHash` = sha256 of the canonical
+signed package); the facilitator applies it only for the journal entry of that
+seller, network and package. A cancelled voucher is final: it is refused with
+`invalid_batch_settlement_obyte_voucher_refused` and frees the channel. Stored
 vouchers are encrypted at rest.
 
 `commitmentId = "<network>:<aa>:<period>:<amount_spent>"`. Success:

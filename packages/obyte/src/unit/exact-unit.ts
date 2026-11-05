@@ -280,7 +280,15 @@ function checkMessages(
     if (message['payload_location'] !== 'inline' || !('payload' in message)) {
       return unsupported('Only inline payloads are supported');
     }
-    if (getBase64Hash(message['payload'], true) !== message['payload_hash']) {
+    // obyte.js throws on null / empty objects / empty arrays in a payload; the
+    // unit hash does not cover payloads, so such a unit gets this far.
+    let payloadHash: string;
+    try {
+      payloadHash = getBase64Hash(message['payload'], true);
+    } catch {
+      return reject(R.payloadHash, 'Payload cannot be hashed');
+    }
+    if (payloadHash !== message['payload_hash']) {
       return reject(R.payloadHash, 'payload_hash does not match payload');
     }
     const payload = message['payload'];

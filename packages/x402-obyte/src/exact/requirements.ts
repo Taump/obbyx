@@ -11,6 +11,7 @@ import {
   reject,
 } from '@obbyx/obyte';
 import { z } from 'zod';
+import { SHA256_HEX_RE } from '../util/format.js';
 
 export const EXACT_SCHEME = 'exact';
 
@@ -23,7 +24,7 @@ export const EXACT_SCHEME = 'exact';
  */
 export const exactExtraSchema = z
   .object({
-    binding: z.string().regex(/^[0-9a-f]{64}$/, 'binding must be 64 lowercase hex chars'),
+    binding: z.string().regex(SHA256_HEX_RE, 'binding must be 64 lowercase hex chars'),
     quoteId: z
       .string()
       .min(8)
@@ -98,11 +99,19 @@ export function acceptedMatches(payload: PaymentPayload, req: PaymentRequirement
   );
 }
 
+/**
+ * Deterministic JSON: object keys sorted by UTF-16 code units (never by
+ * locale: `localeCompare` depends on ICU data and could change hashes between
+ * Node builds). Feeds the binding HMAC and package hashes — pinned by golden
+ * vectors in test/canonical-golden.test.ts.
+ */
 export function canonical(value: unknown): string {
   return JSON.stringify(value, (_k, v: unknown) =>
     v && typeof v === 'object' && !Array.isArray(v)
       ? Object.fromEntries(
-          Object.entries(v as Record<string, unknown>).sort(([x], [y]) => x.localeCompare(y)),
+          Object.entries(v as Record<string, unknown>).sort(([x], [y]) =>
+            x < y ? -1 : x > y ? 1 : 0,
+          ),
         )
       : v,
   );

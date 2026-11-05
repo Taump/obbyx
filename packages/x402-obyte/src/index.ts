@@ -27,7 +27,7 @@ export {
   type FinalityPolicy,
 } from './exact/facilitator.js';
 export { ExactObyteClient, type ExactObyteClientOptions } from './exact/client.js';
-export { type WatcherGateway, type WatcherHealth } from './batch/gateway.js';
+export { type DeliveryOutcome, type WatcherGateway, type WatcherHealth } from './batch/gateway.js';
 export {
   BATCH_REASONS,
   BATCH_SCHEME,
@@ -44,20 +44,31 @@ export {
   type BatchStore,
   SqliteBatchStore,
   type ChannelRow,
+  type CommitmentOwner,
   type CommitmentRow,
   type CommitmentState,
+  ownedBy,
 } from './batch/store.js';
 export { BatchObyteFacilitator, type BatchObyteFacilitatorOptions } from './batch/facilitator.js';
 export {
   type ClientMessage,
   type CommitmentMessage,
   type ServerMessage,
+  type Receipt,
+  type ReceiptKind,
+  WATCHER_ACK_PURPOSE,
   WATCHER_LOGIN_PURPOSE,
+  WATCHER_PROTOCOL_VERSION,
+  WATCHER_NACK_PURPOSE,
   clientMessageSchema,
   commitmentMessageSchema,
   loginMessage,
+  packageHashOf,
+  voucherPackageOf,
+  receiptMessage,
   serverMessageSchema,
   verifyWatcherLogin,
+  verifyWatcherReceipt,
 } from './batch/watcher-protocol.js';
 export { startHeartbeat } from './hub/heartbeat.js';
 export {

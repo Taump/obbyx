@@ -22,7 +22,7 @@ const paywall = new ObytePaywall({
   secret: process.env.SELLER_SECRET!, // ≥ 32 bytes, HMAC key for operation bindings
   store: new ConsumedProofsStore('./data/proofs.db'),
   logger,
-  batch: { minChannelTimeoutSeconds: 3600 }, // optional: accept payment channels (needs your watcher)
+  batch: { minChannelTimeoutSeconds: 14_400 }, // optional: accept payment channels (needs your watcher)
 });
 
 app.post('/api/answer', paywall.paid({ price: { amount: '20000' } }, async (req) => ({ body: { … } })));

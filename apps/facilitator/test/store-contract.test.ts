@@ -64,7 +64,12 @@ const settlement = (key: string) => ({
   publishDeadline: 9_999_999_999,
 });
 
-const OWNER = { payTo: 'S'.repeat(32), network: 'obyte:testnet' };
+/** The watcher's signed receipt names the seller, the network and the exact package. */
+const owner = (packageHash: string) => ({
+  payTo: 'S'.repeat(32),
+  network: 'obyte:testnet',
+  packageHash,
+});
 
 const voucher = (amountSpent: bigint, hash: string, period = 1): AppendInput => ({
   channelKey: 'obyte:testnet:aa:X',
@@ -131,8 +136,12 @@ describe.each(IMPLS)('BatchStore contract — $name', (impl) => {
       reason: 'channel_busy',
     });
     if (!first.ok) return;
-    expect(await batch.commit(first.commitment.seq, OWNER)).toMatchObject({ state: 'committed' });
-    expect(await batch.commit(first.commitment.seq, OWNER)).toMatchObject({ state: 'committed' }); // idempotent
+    expect(await batch.commit(first.commitment.seq, owner('h1'))).toMatchObject({
+      state: 'committed',
+    });
+    expect(await batch.commit(first.commitment.seq, owner('h1'))).toMatchObject({
+      state: 'committed',
+    }); // idempotent
     expect((await batch.channel('obyte:testnet:aa:X'))?.committed).toBe(100n);
     expect(await batch.appendPending(voucher(300n, 'h3'))).toMatchObject({
       ok: false,
@@ -147,13 +156,36 @@ describe.each(IMPLS)('BatchStore contract — $name', (impl) => {
     const a = await batch.appendPending(voucher(100n, 'x1'));
     if (!a.ok) throw new Error('append failed');
     expect(
-      await batch.commit(a.commitment.seq, { payTo: 'Q'.repeat(32), network: 'obyte:testnet' }),
+      await batch.commit(a.commitment.seq, { ...owner('x1'), payTo: 'Q'.repeat(32) }),
     ).toBeUndefined();
     expect(
-      await batch.commit(a.commitment.seq, { payTo: 'S'.repeat(32), network: 'obyte:livenet' }),
+      await batch.commit(a.commitment.seq, { ...owner('x1'), network: 'obyte:livenet' }),
     ).toBeUndefined();
+    // a receipt for another package (e.g. a reused seq) commits nothing
+    expect(await batch.commit(a.commitment.seq, owner('other'))).toBeUndefined();
+    expect(await batch.cancel(a.commitment.seq, owner('other'))).toBeUndefined();
     expect((await batch.commitment(a.commitment.seq))?.state).toBe('pending');
     expect((await batch.channel('obyte:testnet:aa:X'))?.pendingSeq).toBe(a.commitment.seq);
+  });
+
+  it('cancel frees the channel without committing; final states are never undone', async () => {
+    const { batch } = await impl.make();
+    const a = await batch.appendPending(voucher(100n, 'n1'));
+    if (!a.ok) throw new Error('append failed');
+    expect(await batch.cancel(a.commitment.seq, owner('n1'))).toMatchObject({ state: 'cancelled' });
+    expect(await batch.commit(a.commitment.seq, owner('n1'))).toMatchObject({ state: 'cancelled' });
+    expect(await batch.channel('obyte:testnet:aa:X')).toMatchObject({
+      committed: 0n,
+      pendingSeq: null,
+    });
+    expect(await batch.journal('S'.repeat(32), 0)).toHaveLength(0);
+    expect(await batch.pending('S'.repeat(32))).toHaveLength(0);
+    // the same cumulative amount can be paid again by a new voucher
+    const b = await batch.appendPending(voucher(100n, 'n2'));
+    if (!b.ok) throw new Error('append failed');
+    expect(await batch.commit(b.commitment.seq, owner('n2'))).toMatchObject({ state: 'committed' });
+    expect(await batch.cancel(b.commitment.seq, owner('n2'))).toMatchObject({ state: 'committed' });
+    expect((await batch.channel('obyte:testnet:aa:X'))?.committed).toBe(100n);
   });
 
   it('only one of many concurrent vouchers is accepted', async () => {
@@ -167,7 +199,7 @@ describe.each(IMPLS)('BatchStore contract — $name', (impl) => {
   it('a new period resets the committed amount; the journal is ordered by seq per seller', async () => {
     const { batch } = await impl.make();
     const a = await batch.appendPending(voucher(100n, 'p1'));
-    if (a.ok) await batch.commit(a.commitment.seq, OWNER);
+    if (a.ok) await batch.commit(a.commitment.seq, owner('p1'));
     const b = await batch.appendPending(voucher(100n, 'p2', 2));
     expect(b.ok).toBe(true);
     const journal = await batch.journal('S'.repeat(32), 0);

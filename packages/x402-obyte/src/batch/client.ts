@@ -135,9 +135,11 @@ export function deposit(options: BatchClientOptions, aa: string, amount: bigint)
 }
 
 /**
- * The client (B) starts closing: declares what it spent (the last confirmed
- * cumulative amount). The seller's watcher confirms at once if honest, or
- * answers with a fraud proof if B under-declares.
+ * The client (B) starts closing: declares what it spent. Pass the channel's
+ * `maxSigned` (the highest voucher ever signed in this period), NOT just the
+ * confirmed amount: declaring less than any voucher the seller holds lets it
+ * take the whole channel with a fraud proof. The seller's watcher confirms at
+ * once if the declaration is right.
  */
 export function closeChannel(
   options: BatchClientOptions,

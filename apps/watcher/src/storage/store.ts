@@ -61,6 +61,8 @@ export type ActionKind = 'close' | 'confirm' | 'fraud_proof';
 export type SaveResult =
   | { readonly kind: 'stored' }
   | { readonly kind: 'duplicate' }
+  /** The seq is taken by ANOTHER voucher (e.g. the facilitator's journal was reset). */
+  | { readonly kind: 'seq_conflict' }
   | { readonly kind: 'not_increasing'; readonly best: bigint };
 
 /** Close states that make a channel "closing" for the facilitator. */
@@ -116,8 +118,16 @@ export class WatcherStore {
         create: { ...v.channel, firstSeen: ts },
         update: {},
       });
+      // This exact package is already ours (under any seq, e.g. the envelope's
+      // seq was altered in transit): acking it again is true. Checked BEFORE
+      // the cumulative rule, which would otherwise refuse our own voucher.
+      const same = await tx.voucher.findFirst({
+        where: { aa: v.aa, period: v.period, packageJson: v.packageJson },
+      });
+      if (same !== null) return { kind: 'duplicate' };
       const existing = await tx.voucher.findUnique({ where: { seq: v.seq } });
-      if (existing !== null) return { kind: 'duplicate' };
+      // The seq holds ANOTHER package: acking would confirm one we never stored.
+      if (existing !== null) return { kind: 'seq_conflict' };
       // A NEW journal entry must raise the channel's cumulative amount: the
       // facilitator accepts the next voucher only after the previous one was
       // acked. One that does not (e.g. the same cumulative amount reused
@@ -171,7 +181,8 @@ export class WatcherStore {
         amountSpent: BigInt(top.amountSpent),
         packageJson: top.packageJson,
         receivedAt: top.receivedAt,
-        firstReceivedAt: Math.min(...rows.map((r) => r.receivedAt)),
+        // a loop, not Math.min(...rows): spreading >~100k rows throws RangeError
+        firstReceivedAt: rows.reduce((min, r) => Math.min(min, r.receivedAt), Infinity),
       };
     });
   }

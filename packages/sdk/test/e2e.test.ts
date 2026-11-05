@@ -287,7 +287,7 @@ describe('end to end: client → seller paywall → facilitator → (fake) hub',
     expect(budget.used('base')).toBe(40_000n);
   });
 
-  it('a payment that definitely failed gives its budget back', async () => {
+  it('a refused exact payment stays counted: the seller still holds a signed unit', async () => {
     const budget = new SpendingBudget({ total: new Map([['base', 20_000n]]) });
     hub.post = 'reject';
     const failed = await payingFetch(
@@ -302,7 +302,8 @@ describe('end to end: client → seller paywall → facilitator → (fake) hub',
       },
     );
     expect(failed.response.status).toBe(402);
-    expect(budget.used('base')).toBe(0n);
+    // the 402 is not authenticated and the signed unit could still be broadcast
+    expect(budget.used('base')).toBe(20_000n);
   });
 
   it('the buyer refuses offers above its limit', async () => {
@@ -449,6 +450,56 @@ describe('x402 payment-identifier (seller declares it)', () => {
     expect(await again.response.json()).toEqual({ n: 1, q: 'a' });
     expect(pidCalls).toBe(1);
     expect(hub.calls['postJoint']).toBe(1);
+  });
+
+  it('a known id with a forged (unsigned) payment does not replay the paid response', async () => {
+    const id = 'pay_0123456789abcdef0003';
+    expect((await call('a', id)).response.status).toBe(200);
+    const offer = await fetch(`${pidBase}/pid`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"q":"a"}',
+    });
+    const required = decodePaymentRequiredHeader(offer.headers.get('PAYMENT-REQUIRED')!);
+    const header = encodePaymentSignatureHeader({
+      x402Version: 2,
+      accepted: required.accepts[0]!,
+      payload: { unit: { unit: 'A'.repeat(43) + '=' } },
+      extensions: { 'payment-identifier': { info: { id } } },
+    });
+    const res = await fetch(`${pidBase}/pid`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'PAYMENT-SIGNATURE': header },
+      body: '{"q":"a"}',
+    });
+    expect(res.status).toBe(409);
+    expect(await res.text()).not.toContain('"n"');
+    expect(pidCalls).toBe(1);
+  });
+
+  it('terms outside the binding (maxTimeoutSeconds) cannot be changed by the client', async () => {
+    const offer = await fetch(`${pidBase}/pid`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"q":"t"}',
+    });
+    const required = decodePaymentRequiredHeader(offer.headers.get('PAYMENT-REQUIRED')!);
+    const accepted = { ...required.accepts[0]!, maxTimeoutSeconds: 1_000_000_000 };
+    const result = await mechanism().createPaymentPayload(2, accepted);
+    const header = encodePaymentSignatureHeader({
+      x402Version: 2,
+      accepted,
+      payload: result.payload,
+      extensions: { 'payment-identifier': { info: { id: 'pay_0123456789abcdef0004' } } },
+    });
+    const res = await fetch(`${pidBase}/pid`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'PAYMENT-SIGNATURE': header },
+      body: '{"q":"t"}',
+    });
+    expect(res.status).toBe(402);
+    expect(pidCalls).toBe(0);
+    expect(hub.calls['postJoint'] ?? 0).toBe(0);
   });
 
   it('the same id for a different operation is a conflict (409)', async () => {

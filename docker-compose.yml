@@ -38,6 +38,8 @@ services:
     environment:
       NETWORK: obyte:testnet
       FACILITATOR_URL: http://facilitator:4021
+      # plain http only inside this private compose network; use https:// across hosts
+      FACILITATOR_ALLOW_HTTP: '1'
       DB_PATH: /data/watcher.db
       OBBYX_HOME: /wallet
     volumes:

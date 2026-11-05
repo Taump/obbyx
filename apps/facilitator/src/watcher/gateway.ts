@@ -8,19 +8,23 @@ import {
   type BatchStore,
   type ClientMessage,
   type CommitmentRow,
+  type DeliveryOutcome,
   type ServerMessage,
   type SettlementEvent,
   type WatcherGateway,
   type WatcherHealth,
+  WATCHER_PROTOCOL_VERSION,
   clientMessageSchema,
   verifyWatcherLogin,
+  verifyWatcherReceipt,
 } from '@obbyx/x402-obyte';
 
 /**
  * WebSocket gateway to sellers' watchers (implements the WatcherGateway port).
  * One session per (network, seller); a new login replaces the old session.
- * Every ack commits the voucher (idempotent), which also reconciles vouchers
- * left pending while the watcher was away.
+ * A signed ack commits the voucher, a signed nack cancels it (both
+ * idempotent, both only for the exact package the seller signed for); acks
+ * also reconcile vouchers left pending while the watcher was away.
  */
 export interface WsWatcherGatewayOptions {
   readonly store: BatchStore;
@@ -46,7 +50,7 @@ interface Session {
 
 export class WsWatcherGateway implements WatcherGateway {
   private readonly sessions = new Map<string, Session>();
-  private readonly waiters = new Map<number, Set<() => void>>();
+  private readonly waiters = new Map<number, Set<(outcome: DeliveryOutcome) => void>>();
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   private readonly log: Logger;
   private readonly now: () => number;
@@ -87,21 +91,21 @@ export class WsWatcherGateway implements WatcherGateway {
     return { ok: true };
   }
 
-  async deliver(commitment: CommitmentRow, timeoutMs: number): Promise<'acked' | 'timeout'> {
+  async deliver(commitment: CommitmentRow, timeoutMs: number): Promise<DeliveryOutcome> {
     const s = this.sessions.get(sessionKey(commitment.network, commitment.payTo));
-    if (s === undefined || s.ws.readyState !== WebSocket.OPEN) return 'timeout';
-    let waiter: (() => void) | undefined;
-    const acked = new Promise<'acked'>((resolve) => {
-      waiter = () => resolve('acked');
-      this.whenAcked(commitment.seq, waiter);
+    if (s === undefined || s.ws.readyState !== WebSocket.OPEN) return { kind: 'timeout' };
+    let waiter: ((outcome: DeliveryOutcome) => void) | undefined;
+    const settled = new Promise<DeliveryOutcome>((resolve) => {
+      waiter = resolve;
+      this.whenSettled(commitment.seq, waiter);
     });
     this.send(s.ws, toMessage(commitment));
     let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    const timeout = new Promise<DeliveryOutcome>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
     });
     try {
-      return await Promise.race([acked, timeout]);
+      return await Promise.race([settled, timeout]);
     } finally {
       clearTimeout(timer);
       // Never leave a waiter behind (a timed-out delivery would leak one per retry).
@@ -149,7 +153,7 @@ export class WsWatcherGateway implements WatcherGateway {
           session.closing = closingOf(msg);
           return;
         }
-        await this.commitAcked(session, msg.seq);
+        await this.onReceipt(session, msg);
       })().catch((err: unknown) => this.log.error({ err }, 'watcher message handling failed'));
     });
 
@@ -174,6 +178,13 @@ export class WsWatcherGateway implements WatcherGateway {
     msg: Extract<ClientMessage, { type: 'hello' }>,
     challenge: string,
   ): Session | undefined {
+    if (msg.protocol !== WATCHER_PROTOCOL_VERSION) {
+      this.fail(
+        ws,
+        `watcher protocol ${msg.protocol ?? 1} is not supported (need ${WATCHER_PROTOCOL_VERSION}): upgrade the watcher`,
+      );
+      return undefined;
+    }
     if (!isObyteNetwork(msg.network) || !this.options.networks.includes(msg.network)) {
       this.fail(ws, 'network not served');
       return undefined;
@@ -208,22 +219,57 @@ export class WsWatcherGateway implements WatcherGateway {
   }
 
   /**
-   * ack: the voucher is durable on the watcher → committed here (idempotent).
-   * Ownership is enforced atomically inside commit (seller + network).
+   * ack → committed, nack → cancelled (the channel is free). The receipt must
+   * be signed by THIS session's seller for THIS seq; the store applies it only
+   * to the journal entry with the signed packageHash (see watcher-protocol.ts).
    */
-  private async commitAcked(session: Session, seq: number): Promise<void> {
-    const committed = await this.options.store.commit(seq, {
-      payTo: session.seller,
-      network: session.network,
+  private async onReceipt(
+    session: Session,
+    msg: Extract<ClientMessage, { type: 'ack' | 'nack' }>,
+  ): Promise<void> {
+    const receipt = verifyWatcherReceipt(msg.type, msg.receipt, {
+      seller: session.seller,
+      network: getNetwork(session.network),
+      seq: msg.seq,
     });
-    if (committed === undefined) {
-      this.log.warn({ seq }, 'ack for an unknown or foreign voucher ignored');
+    if (!receipt.ok) {
+      this.log.warn({ seq: msg.seq, reason: receipt.message }, `invalid ${msg.type} ignored`);
+      void this.emit(session.network, session.seller, 'watcher_receipt_invalid', {
+        seq: msg.seq,
+        type: msg.type,
+      });
       return;
     }
-    this.log.debug({ seq, seller: session.seller }, 'watcher ack');
-    void this.emit(session.network, session.seller, 'watcher_ack', { seq });
-    for (const resolve of this.waiters.get(seq) ?? []) resolve();
-    this.waiters.delete(seq);
+    const owner = {
+      payTo: session.seller,
+      network: session.network,
+      packageHash: receipt.value.packageHash,
+    };
+    const row =
+      msg.type === 'ack'
+        ? await this.options.store.commit(msg.seq, owner)
+        : await this.options.store.cancel(msg.seq, owner);
+    if (row === undefined) {
+      this.log.warn({ seq: msg.seq }, `${msg.type} for an unknown or foreign voucher ignored`);
+      return;
+    }
+    // commit/cancel of an owned entry always leave it in a final state; when it
+    // was already final (an ack after a nack, or vice versa) that state stands.
+    const outcome: DeliveryOutcome =
+      row.state === 'cancelled'
+        ? { kind: 'refused', reason: receipt.value.reason ?? 'refused' }
+        : { kind: 'acked' };
+    if (row.state !== (msg.type === 'ack' ? 'committed' : 'cancelled')) {
+      this.log.warn({ seq: msg.seq, state: row.state }, `${msg.type} for a settled voucher`);
+    }
+    this.log.debug({ seq: msg.seq, seller: session.seller, state: row.state }, msg.type);
+    void this.emit(session.network, session.seller, `watcher_${msg.type}`, {
+      seq: msg.seq,
+      state: row.state,
+      ...(receipt.value.reason === undefined ? {} : { reason: receipt.value.reason }),
+    });
+    for (const resolve of this.waiters.get(msg.seq) ?? []) resolve(outcome);
+    this.waiters.delete(msg.seq);
   }
 
   private async emit(
@@ -255,8 +301,8 @@ export class WsWatcherGateway implements WatcherGateway {
     }
   }
 
-  /** Registers a callback for the watcher's ack of a journal entry. */
-  private whenAcked(seq: number, resolve: () => void): void {
+  /** Registers a callback for the watcher's ack or nack of a journal entry. */
+  private whenSettled(seq: number, resolve: (outcome: DeliveryOutcome) => void): void {
     const set = this.waiters.get(seq) ?? new Set();
     set.add(resolve);
     this.waiters.set(seq, set);
@@ -278,6 +324,8 @@ function sessionKey(network: string, seller: string): string {
 }
 
 function toMessage(c: CommitmentRow): ServerMessage {
+  // journal() and pending() never return cancelled entries; deliver() only gets pending ones.
+  if (c.state === 'cancelled') throw new Error(`cancelled voucher ${c.seq} must not be sent`);
   return {
     type: 'commitment',
     seq: c.seq,

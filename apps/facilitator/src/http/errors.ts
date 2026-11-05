@@ -1,6 +1,5 @@
-import { createHash } from 'node:crypto';
 import type { PaymentPayload, SettleResponse } from '@x402/core/types';
-import { canonical } from '@obbyx/x402-obyte';
+import { packageHashOf, voucherPackageOf } from '@obbyx/x402-obyte';
 import type { Logger } from '@obbyx/obyte/logger';
 
 /** Thrown by x402 core when no mechanism matches (version/scheme/network). */
@@ -16,7 +15,8 @@ export function isUnsupported(err: unknown): boolean {
 export function proofIdOf(payload: PaymentPayload): string {
   const unit = (payload.payload['unit'] as { unit?: unknown } | undefined)?.unit;
   if (typeof unit === 'string') return unit;
-  return createHash('sha256').update(canonical(payload.payload)).digest('hex');
+  // the channel package hash, as in the journal and the seller watcher's logs
+  return packageHashOf(voucherPackageOf(payload.payload) ?? payload.payload);
 }
 
 /**

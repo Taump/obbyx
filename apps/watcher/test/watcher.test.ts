@@ -3,7 +3,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import obyte from 'obyte';
 import { OBYTE_NETWORKS, channelAddress, channelDefinition } from '@obbyx/obyte';
 import { createLogger } from '@obbyx/obyte/logger';
-import { SqliteBatchStore, SqliteSettlementStore, canonical } from '@obbyx/x402-obyte';
+import {
+  SqliteBatchStore,
+  SqliteSettlementStore,
+  canonical,
+  packageHashOf,
+  verifyWatcherReceipt,
+} from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WsWatcherGateway } from '../../facilitator/src/watcher/gateway.js';
 import {
@@ -80,7 +86,8 @@ const until = async (cond: () => Promise<boolean> | boolean, ms = 3000) => {
   }
 };
 
-async function append(pkg: Record<string, unknown>, amountSpent: bigint, hash: string) {
+/** Appends to the facilitator journal under the package's real hash (receipts sign it). */
+async function append(pkg: Record<string, unknown>, amountSpent: bigint) {
   const res = await facilitatorStore.appendPending({
     channelKey: `${NET.caip2}:aa:${AA}`,
     network: NET.caip2,
@@ -92,7 +99,7 @@ async function append(pkg: Record<string, unknown>, amountSpent: bigint, hash: s
     amountSpent,
     paymentAmount: 100n,
     binding: 'f0'.repeat(32),
-    packageHash: hash,
+    packageHash: packageHashOf(pkg),
     packageJson: canonical(pkg),
   });
   if (!res.ok) throw new Error(`append failed: ${res.reason}`);
@@ -151,7 +158,7 @@ const dataOf = (unit: Record<string, unknown>) =>
 describe('seller watcher', () => {
   it('stores a valid voucher durably, then acks → the facilitator commits it', async () => {
     const pkg = voucherPkg(100);
-    const c = await append(pkg, 100n, 'v1');
+    const c = await append(pkg, 100n);
     link.start();
     await until(async () => (await facilitatorStore.commitment(c.seq))?.state === 'committed');
     expect(await store.cursor()).toBe(c.seq);
@@ -186,7 +193,7 @@ describe('seller watcher', () => {
       logger: capture,
       bytesBalance: async () => 1_000_000n,
     });
-    const c = await append(voucherPkg(100), 100n, 'placeholder-hash');
+    const c = await append(voucherPkg(100), 100n);
     link.start();
     await until(async () => (await facilitatorStore.commitment(c.seq))?.state === 'committed');
     const acked = lines.find((l) => l['msg'] === 'voucher stored and acked');
@@ -194,18 +201,26 @@ describe('seller watcher', () => {
     expect(acked?.['proofId']).toBe(createHash('sha256').update(c.packageJson).digest('hex'));
   });
 
-  it('a forged voucher is never acked (stays pending, not stored)', async () => {
-    const c = await append(voucherPkg(100, testKey('mallory')), 100n, 'v2');
+  it('a forged voucher is never acked: not stored, nacked, cancelled (channel freed)', async () => {
+    const c = await append(voucherPkg(100, testKey('mallory')), 100n);
+    link.start();
+    await until(async () => (await facilitatorStore.commitment(c.seq))?.state === 'cancelled');
+    expect(await store.cursor()).toBe(0);
+    expect((await facilitatorStore.channel(c.channelKey))?.pendingSeq).toBeNull();
+  });
+
+  it('a hub failure while validating is NOT a refusal: no answer, the voucher stays pending', async () => {
+    hub.definitions.delete(AA); // our hub does not know the channel yet
+    const c = await append(voucherPkg(100), 100n);
     link.start();
     await until(() => link.connected);
     await new Promise((r) => setTimeout(r, 100));
     expect((await facilitatorStore.commitment(c.seq))?.state).toBe('pending');
-    expect(await store.cursor()).toBe(0);
   });
 
   it('answers a dishonest client close with a fraud proof carrying our best voucher, once', async () => {
     const pkg = voucherPkg(100);
-    const c = await append(pkg, 100n, 'v3');
+    const c = await append(pkg, 100n);
     link.start();
     await until(async () => (await facilitatorStore.commitment(c.seq))?.state === 'committed');
 
@@ -240,7 +255,7 @@ describe('seller watcher', () => {
   });
 
   it('a push and the poll pass at the same time send the fraud proof once', async () => {
-    const c = await append(voucherPkg(100), 100n, 'v-race');
+    const c = await append(voucherPkg(100), 100n);
     link.start();
     await until(async () => (await facilitatorStore.commitment(c.seq))?.state === 'committed');
     hub.aaVars.set(AA, {
@@ -263,7 +278,7 @@ describe('seller watcher', () => {
   });
 
   it('announces a seller close first (no new vouchers accepted), then sends it with the best voucher', async () => {
-    await append(voucherPkg(100), 100n, 'v4');
+    await append(voucherPkg(100), 100n);
     link.start();
     await until(async () => (await store.cursor()) > 0);
     let now = Math.floor(Date.now() / 1000); // the store stamps actions with real time
@@ -346,17 +361,62 @@ describe('the watcher never acks a voucher that does not raise the cumulative am
     });
   };
 
-  it('same cumulative amount under a new seq (reuse through a second facilitator) is not acked', async () => {
+  /** Feeds raw facilitator messages to the link and records what it sends back. */
+  const fakeSocket = () => {
     const sent: string[] = [];
     const ws = { send: (d: string) => sent.push(d), readyState: 1 };
-    const handle = (
+    const linkHandle = (
       link as unknown as { handle(ws: unknown, raw: string): Promise<void> }
     ).handle.bind(link);
-    await handle(ws, commitment(1, 100));
-    await handle(ws, commitment(1, 100)); // re-delivery of the same entry: acked again
-    await handle(ws, commitment(7, 100, 'e1'.repeat(32))); // another operation, same cumulative: NOT acked
-    await handle(ws, commitment(8, 200, 'e2'.repeat(32))); // raises it: acked
-    expect(sent.map((d) => (JSON.parse(d) as { seq: number }).seq)).toEqual([1, 1, 8]);
+    return { sent, handle: (raw: string) => linkHandle(ws, raw) };
+  };
+
+  /** Receipt type and seq of every answer; each must carry a seller-signed receipt. */
+  const answers = (sent: string[]) =>
+    sent.map((d) => {
+      const m = JSON.parse(d) as { type: string; seq: number; receipt: unknown };
+      const ok = verifyWatcherReceipt(m.type as 'ack' | 'nack', m.receipt, {
+        seller,
+        network: NET,
+        seq: m.seq,
+      }).ok;
+      return ok ? `${m.type}:${m.seq}` : `UNSIGNED ${m.type}:${m.seq}`;
+    });
+
+  it('same cumulative amount under a new seq (reuse through a second facilitator) is not acked', async () => {
+    const { sent, handle } = fakeSocket();
+    await handle(commitment(1, 100));
+    await handle(commitment(1, 100)); // re-delivery of the same entry: acked again
+    await handle(commitment(7, 100, 'e1'.repeat(32))); // another operation, same cumulative: nacked
+    await handle(commitment(8, 200, 'e2'.repeat(32))); // raises it: acked
+    expect(answers(sent)).toEqual(['ack:1', 'ack:1', 'nack:7', 'ack:8']);
     expect((await store.best(AA, 1))?.amountSpent).toBe(200n);
+  });
+
+  it('a known seq carrying a DIFFERENT voucher (facilitator journal reset) is not acked', async () => {
+    const { sent, handle } = fakeSocket();
+    await handle(commitment(1, 100));
+    await handle(commitment(1, 300, 'e3'.repeat(32))); // same seq, other voucher: no answer at all
+    expect(answers(sent)).toEqual(['ack:1']);
+    expect((await store.best(AA, 1))?.amountSpent).toBe(100n);
+  });
+
+  it('an altered envelope never yields a nack (the receipt does not sign it)', async () => {
+    const { sent, handle } = fakeSocket();
+    const tamper = (raw: string, patch: Record<string, unknown>) =>
+      JSON.stringify({ ...(JSON.parse(raw) as object), ...patch });
+    await handle(tamper(commitment(1, 100), { amountSpent: '999' }));
+    await handle(tamper(commitment(1, 100), { network: 'obyte:livenet' }));
+    expect(answers(sent)).toEqual([]);
+    expect(await store.best(AA, 1)).toBeUndefined();
+    await handle(commitment(1, 100)); // the genuine one still goes through
+    expect(answers(sent)).toEqual(['ack:1']);
+  });
+
+  it('a voucher re-delivered under an altered seq is acked, never nacked as not increasing', async () => {
+    const { sent, handle } = fakeSocket();
+    await handle(commitment(7, 100)); // relay rewrote seq 5 → 7: stored under 7
+    await handle(commitment(5, 100)); // the genuine seq 5, same package
+    expect(answers(sent)).toEqual(['ack:7', 'ack:5']);
   });
 });

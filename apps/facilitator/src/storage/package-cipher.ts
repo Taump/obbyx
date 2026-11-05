@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { ObbyxError } from '@obbyx/obyte';
 
@@ -34,7 +34,6 @@ export class PackageCipher {
     if (process.platform !== 'win32' && (statSync(path).mode & 0o077) !== 0) {
       throw new ObbyxError('invalid_config', `${path} must not be readable by others (chmod 600)`);
     }
-    chmodSync(path, 0o600);
     return PackageCipher.fromKey(Buffer.from(readFileSync(path, 'utf8').trim(), 'base64'));
   }
 
@@ -57,9 +56,13 @@ export class PackageCipher {
       throw new ObbyxError('package_corrupt', 'Malformed encrypted channel package');
     }
     try {
-      const d = createDecipheriv('aes-256-gcm', this.key, Buffer.from(iv, 'base64url'));
+      const ivBytes = Buffer.from(iv, 'base64url');
+      const tagBytes = Buffer.from(tag, 'base64url');
+      // Without authTagLength Node accepts truncated tags (down to 4 bytes).
+      if (ivBytes.length !== 12 || tagBytes.length !== 16) throw new Error('bad iv/tag length');
+      const d = createDecipheriv('aes-256-gcm', this.key, ivBytes, { authTagLength: 16 });
       d.setAAD(Buffer.from(packageHash));
-      d.setAuthTag(Buffer.from(tag, 'base64url'));
+      d.setAuthTag(tagBytes);
       return Buffer.concat([d.update(Buffer.from(ct, 'base64url')), d.final()]).toString('utf8');
     } catch {
       throw new ObbyxError(

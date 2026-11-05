@@ -31,7 +31,7 @@ Unknown networks in `NETWORKS` and invalid asset ids in `ASSETS_*` are rejected 
 | `FACILITATOR_API_KEYS` | list (comma-separated) | `(empty)` | Comma-separated shared keys for /verify and /settle (Authorization: Bearer). Empty = open: bind to localhost only. |
 | `RATE_LIMIT_PER_MINUTE` | number | `600` | Requests per minute per client to /verify and /settle (0 = unlimited). |
 | `BATCH_ENABLED` | `0` \| `1` \| `true` \| `false` | `1` | Serve the batch-settlement scheme (payment channels). |
-| `MIN_CHANNEL_TIMEOUT_SECONDS` | number | `3600` | Smallest channel dispute window the facilitator accepts. |
+| `MIN_CHANNEL_TIMEOUT_SECONDS` | number | `14400` | Smallest channel dispute window the facilitator accepts. The seller watcher reacts to a close only once it is stable, and stabilization alone can lag ~2 h: keep this above that lag plus any watcher outage. |
 | `WATCHER_ACK_TIMEOUT_MS` | number | `5000` | How long /settle waits for the seller watcher to store a voucher; after that the payment is reported as settlement_pending. |
 | `WATCHER_HEARTBEAT_TIMEOUT_MS` | number | `45000` | A watcher that has not sent a heartbeat for this long is considered offline. |
 | `WATCHER_MIN_BYTES` | integer | `100000` | Minimum bytes a seller watcher must hold for defense transactions before channel payments are accepted. |
@@ -46,7 +46,8 @@ Run one watcher per seller address. It uses the wallet created by `obbyx init` i
 | Variable | Type | Default | Description |
 | --- | --- | --- | --- |
 | `NETWORK` | string | `obyte:testnet` | Network of the seller channels: testnet, livenet or a CAIP-2 id. |
-| `FACILITATOR_URL` | string | `http://127.0.0.1:4021` | Facilitator base URL; the watcher connects to its /watcher WebSocket. |
+| `FACILITATOR_URL` | string | `http://127.0.0.1:4021` | Facilitator base URL; the watcher connects to its /watcher WebSocket. Must be https:// unless it is on this machine or FACILITATOR_ALLOW_HTTP=1 (vouchers are bearer-sensitive). |
+| `FACILITATOR_ALLOW_HTTP` | `0` \| `1` \| `true` \| `false` | `0` | 1 = allow plain http:// to a facilitator on another host. Only for a private network you control (e.g. the docker compose network); never over the internet. |
 | `HUB_URL` | string | — | Obyte hub WebSocket URL (default: the public hub of NETWORK). |
 | `DB_PATH` | string | `./data/watcher.db` | SQLite database with the stored vouchers (Prisma). Losing it can lose earned funds. |
 | `OBBYX_HOME` | string | `~/.obbyx` | Directory with the seller wallet (wallet-&lt;network&gt;.json, created by `obbyx init`). |

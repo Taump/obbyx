@@ -1,5 +1,13 @@
-import { OBYTE_NETWORKS, type ObyteNetwork, getNetwork, isAssetId } from '@obbyx/obyte';
-import { envPort, loadConfig, logLevelSchema } from '@obbyx/obyte/config';
+import { OBYTE_NETWORKS, type ObyteNetwork, getNetwork, isAddress, isAssetId } from '@obbyx/obyte';
+import {
+  MAX_TIMER_MS,
+  envFlag,
+  envPort,
+  flagOn,
+  hubUrlSchema,
+  loadConfig,
+  logLevelSchema,
+} from '@obbyx/obyte/config';
 import { z } from 'zod';
 
 /**
@@ -34,12 +42,10 @@ export const facilitatorEnvSchema = z.object({
   NETWORKS: list
     .default(['obyte:testnet'])
     .describe('Comma-separated CAIP-2 networks to serve: obyte:testnet, obyte:livenet.'),
-  HUB_URL_LIVENET: z
-    .url()
+  HUB_URL_LIVENET: hubUrlSchema
     .optional()
     .describe('Obyte hub WebSocket URL for livenet (default: the public hub).'),
-  HUB_URL_TESTNET: z
-    .url()
+  HUB_URL_TESTNET: hubUrlSchema
     .optional()
     .describe('Obyte hub WebSocket URL for testnet (default: the public testnet hub).'),
   ASSETS_LIVENET: list
@@ -86,6 +92,7 @@ export const facilitatorEnvSchema = z.object({
     .number()
     .int()
     .min(500)
+    .max(MAX_TIMER_MS)
     .default(5_000)
     .describe('How often pending settlements are re-checked in the background.'),
   BODY_LIMIT_BYTES: z.coerce
@@ -96,6 +103,7 @@ export const facilitatorEnvSchema = z.object({
     .default(65_536)
     .describe('Maximum request body size.'),
   FACILITATOR_ADDRESSES: list
+    .refine((addresses) => addresses.every(isAddress), 'every entry must be an Obyte address')
     .default([])
     .describe(
       'Comma-separated Obyte addresses the facilitator operator controls; a payment whose payer is one of them is refused.',
@@ -111,16 +119,17 @@ export const facilitatorEnvSchema = z.object({
     .min(0)
     .default(600)
     .describe('Requests per minute per client to /verify and /settle (0 = unlimited).'),
-  BATCH_ENABLED: z
-    .enum(['1', '0', 'true', 'false'])
+  BATCH_ENABLED: envFlag
     .default('1')
     .describe('Serve the batch-settlement scheme (payment channels).'),
   MIN_CHANNEL_TIMEOUT_SECONDS: z.coerce
     .number()
     .int()
     .min(60)
-    .default(3600)
-    .describe('Smallest channel dispute window the facilitator accepts.'),
+    .default(14_400)
+    .describe(
+      'Smallest channel dispute window the facilitator accepts. The seller watcher reacts to a close only once it is stable, and stabilization alone can lag ~2 h: keep this above that lag plus any watcher outage.',
+    ),
   WATCHER_ACK_TIMEOUT_MS: z.coerce
     .number()
     .int()
@@ -134,6 +143,7 @@ export const facilitatorEnvSchema = z.object({
     .number()
     .int()
     .min(1_000)
+    .max(MAX_TIMER_MS)
     .default(45_000)
     .describe('A watcher that has not sent a heartbeat for this long is considered offline.'),
   WATCHER_MIN_BYTES: z.coerce
@@ -188,12 +198,20 @@ export function loadFacilitatorConfig(
   env: Record<string, string | undefined> = process.env,
 ): FacilitatorConfig {
   const schema = facilitatorEnvSchema.superRefine((e, ctx) => {
+    // Aliases (obyte:testnet / obyte-testnet) count as the same network.
+    const served = new Set<string>();
     for (const id of e.NETWORKS) {
+      let caip2: string;
       try {
-        getNetwork(id);
+        caip2 = getNetwork(id).caip2;
       } catch {
         ctx.addIssue({ code: 'custom', path: ['NETWORKS'], message: `Unknown network ${id}` });
+        continue;
       }
+      if (served.has(caip2)) {
+        ctx.addIssue({ code: 'custom', path: ['NETWORKS'], message: `${id} is listed twice` });
+      }
+      served.add(caip2);
     }
     for (const key of ['ASSETS_LIVENET', 'ASSETS_TESTNET'] as const) {
       for (const asset of e[key]) {
@@ -228,7 +246,7 @@ export function loadFacilitatorConfig(
     apiKeys: e.FACILITATOR_API_KEYS,
     ratePerMinute: e.RATE_LIMIT_PER_MINUTE,
     batch: {
-      enabled: e.BATCH_ENABLED === '1' || e.BATCH_ENABLED === 'true',
+      enabled: flagOn(e.BATCH_ENABLED),
       minChannelTimeoutSeconds: e.MIN_CHANNEL_TIMEOUT_SECONDS,
       ackTimeoutMs: e.WATCHER_ACK_TIMEOUT_MS,
       heartbeatTimeoutMs: e.WATCHER_HEARTBEAT_TIMEOUT_MS,

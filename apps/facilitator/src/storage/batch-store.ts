@@ -1,10 +1,12 @@
-import type {
-  AppendInput,
-  AppendResult,
-  BatchStore,
-  ChannelRow,
-  CommitmentRow,
-  CommitmentState,
+import {
+  type AppendInput,
+  type AppendResult,
+  type BatchStore,
+  type ChannelRow,
+  type CommitmentOwner,
+  type CommitmentRow,
+  type CommitmentState,
+  ownedBy,
 } from '@obbyx/x402-obyte';
 import type { BatchChannel, BatchCommitment, PrismaClient } from '../generated/prisma/client.js';
 import type { PackageCipher } from './package-cipher.js';
@@ -85,7 +87,7 @@ export class PrismaBatchStore implements BatchStore {
       this.open(
         tx,
         await tx.batchCommitment.findMany({
-          where: { payTo, seq: { gt: cursor } },
+          where: { payTo, seq: { gt: cursor }, state: { not: 'cancelled' } },
           orderBy: { seq: 'asc' },
           take: limit,
         }),
@@ -155,26 +157,45 @@ export class PrismaBatchStore implements BatchStore {
     });
   }
 
-  commit(
+  commit(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined> {
+    return this.settle(seq, owner, 'committed');
+  }
+
+  cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined> {
+    return this.settle(seq, owner, 'cancelled');
+  }
+
+  /** Same rules as SqliteBatchStore.settle. */
+  private settle(
     seq: number,
-    owner: { payTo: string; network: string },
+    owner: CommitmentOwner,
+    to: 'committed' | 'cancelled',
   ): Promise<CommitmentRow | undefined> {
     return this.prisma.$transaction(async (tx) => {
       const row = await tx.batchCommitment.findUnique({ where: { seq } });
-      if (row === null || row.payTo !== owner.payTo || row.network !== owner.network)
-        return undefined;
-      const c = await this.one(tx, row, 'commit');
-      if (c === undefined || c.state === 'committed') return c;
+      // Ownership is checked on the plaintext columns BEFORE decrypting: a
+      // foreign or forged receipt never counts as a package read.
+      if (row === null || !ownedBy(row, owner)) return undefined;
+      const c = await this.one(tx, row, to === 'committed' ? 'commit' : 'cancel');
+      if (c === undefined || c.state !== 'pending') return c;
       const ts = this.now();
-      await tx.batchCommitment.update({
-        where: { seq },
-        data: { state: 'committed', committedAt: ts },
-      });
-      await tx.batchChannel.updateMany({
-        where: { key: c.channelKey, pendingSeq: seq, period: c.period },
-        data: { committed: c.amountSpent.toString(), pendingSeq: null, updatedAt: ts },
-      });
-      return { ...c, state: 'committed' as const };
+      if (to === 'committed') {
+        await tx.batchCommitment.update({
+          where: { seq },
+          data: { state: 'committed', committedAt: ts },
+        });
+        await tx.batchChannel.updateMany({
+          where: { key: c.channelKey, pendingSeq: seq, period: c.period },
+          data: { committed: c.amountSpent.toString(), pendingSeq: null, updatedAt: ts },
+        });
+      } else {
+        await tx.batchCommitment.update({ where: { seq }, data: { state: 'cancelled' } });
+        await tx.batchChannel.updateMany({
+          where: { key: c.channelKey, pendingSeq: seq },
+          data: { pendingSeq: null, updatedAt: ts },
+        });
+      }
+      return { ...c, state: to };
     });
   }
 }

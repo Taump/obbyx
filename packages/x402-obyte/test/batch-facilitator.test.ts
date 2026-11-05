@@ -1,9 +1,15 @@
 import obyte from 'obyte';
 import type { PaymentPayload, PaymentRequirements } from '@x402/core/types';
-import { CHANNEL_BASE_AA, channelAddress, channelDefinition } from '@obbyx/obyte';
+import {
+  CHANNEL_BASE_AA,
+  channelAddress,
+  channelDefinition,
+  getNetwork,
+  networkKey,
+} from '@obbyx/obyte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { BatchObyteFacilitator } from '../src/batch/facilitator.js';
-import type { WatcherGateway } from '../src/batch/gateway.js';
+import type { DeliveryOutcome, WatcherGateway } from '../src/batch/gateway.js';
 import { BATCH_REASONS as R } from '../src/batch/requirements.js';
 import { SqliteBatchStore, type CommitmentRow } from '../src/batch/store.js';
 import { SqliteSettlementStore } from '../src/exact/store.js';
@@ -22,16 +28,23 @@ const AA = channelAddress(params);
 class FakeGateway implements WatcherGateway {
   healthy = true;
   closing = new Set<string>();
-  ack: 'acked' | 'timeout' = 'acked';
+  ack: 'acked' | 'timeout' | 'refused' = 'acked';
   delivered: CommitmentRow[] = [];
   health(_payTo: string, _network: string, aa?: string) {
     if (aa !== undefined && this.closing.has(aa))
       return { ok: false, closing: true, reason: 'closing' };
     return this.healthy ? { ok: true } : { ok: false, reason: 'watcher offline' };
   }
-  async deliver(c: CommitmentRow) {
+  /** Like the real gateway: the signed receipt settles the entry BEFORE deliver resolves. */
+  async deliver(c: CommitmentRow): Promise<DeliveryOutcome> {
     this.delivered.push(c);
-    return this.ack;
+    const owner = { payTo: c.payTo, network: c.network, packageHash: c.packageHash };
+    if (this.ack === 'acked') await store.commit(c.seq, owner);
+    if (this.ack === 'refused') {
+      await store.cancel(c.seq, owner);
+      return { kind: 'refused', reason: 'not_increasing' };
+    }
+    return { kind: this.ack };
   }
 }
 
@@ -349,5 +362,92 @@ describe('a channel the seller is closing', () => {
       errorReason: 'invalid_batch_settlement_obyte_channel_closing',
       transaction: '',
     });
+  });
+});
+
+describe('signed watcher receipts: ack commits, nack cancels', () => {
+  it('a refused voucher (nack) is a definite failure and frees the channel', async () => {
+    gateway.ack = 'refused';
+    const first = await facilitator().settle(payload(voucher(100)), requirements());
+    expect(first).toMatchObject({ success: false, errorReason: R.refused, transaction: '' });
+    const channel = await store.channel(networkKey(getNetwork(NET), 'aa', AA));
+    expect(channel).toMatchObject({ pendingSeq: null, committed: 0n });
+
+    // retrying the SAME refused voucher stays refused (verify and settle)
+    expect(await facilitator().verify(payload(voucher(100)), requirements())).toMatchObject({
+      isValid: false,
+      invalidReason: R.refused,
+    });
+    expect(await facilitator().settle(payload(voucher(100)), requirements())).toMatchObject({
+      success: false,
+      errorReason: R.refused,
+    });
+
+    // the next operation (same cumulative amount, new binding) goes through
+    gateway.ack = 'acked';
+    const req2 = requirements('e1'.repeat(32));
+    const next = await facilitator().settle(
+      payload(voucher(100, { binding: 'e1'.repeat(32) }), req2),
+      req2,
+    );
+    expect(next).toMatchObject({ success: true });
+  });
+
+  it('a voucher stored before (lost ack) is valid on verify even after the quote expired', async () => {
+    gateway.ack = 'timeout';
+    expect(await facilitator().settle(payload(voucher(100)), requirements())).toMatchObject({
+      errorReason: 'settlement_pending',
+    });
+    gateway.healthy = false; // live checks would refuse it now
+    expect(
+      await facilitator(NOW + 10_000).verify(payload(voucher(100)), requirements()),
+    ).toMatchObject({ isValid: true });
+  });
+});
+
+describe('batch store: receipts must name the exact package', () => {
+  const append = (amount: bigint, hash: string) =>
+    store.appendPending({
+      channelKey: 'k',
+      network: NET,
+      aa: AA,
+      payTo: seller,
+      payer: client,
+      asset: 'base',
+      period: 1,
+      amountSpent: amount,
+      paymentAmount: 100n,
+      binding: 'f0'.repeat(32),
+      packageHash: hash,
+      packageJson: '{}',
+    });
+  const owner = (packageHash: string) => ({ payTo: seller, network: NET, packageHash });
+
+  it('commit/cancel with another packageHash, seller or network do nothing', async () => {
+    const res = await append(100n, 'a'.repeat(64));
+    if (!res.ok) throw new Error('append failed');
+    const seq = res.commitment.seq;
+    expect(await store.commit(seq, owner('b'.repeat(64)))).toBeUndefined();
+    expect(await store.cancel(seq, owner('b'.repeat(64)))).toBeUndefined();
+    expect(
+      await store.commit(seq, { ...owner('a'.repeat(64)), payTo: addressOf(testKey('x')) }),
+    ).toBeUndefined();
+    expect((await store.commitment(seq))?.state).toBe('pending');
+  });
+
+  it('final states are never undone: no commit after cancel, no cancel after commit', async () => {
+    const a = await append(100n, 'a'.repeat(64));
+    if (!a.ok) throw new Error('append failed');
+    expect((await store.cancel(a.commitment.seq, owner('a'.repeat(64))))?.state).toBe('cancelled');
+    expect((await store.commit(a.commitment.seq, owner('a'.repeat(64))))?.state).toBe('cancelled');
+    expect((await store.channel('k'))?.committed).toBe(0n);
+
+    const b = await append(100n, 'c'.repeat(64));
+    if (!b.ok) throw new Error('append failed');
+    expect((await store.commit(b.commitment.seq, owner('c'.repeat(64))))?.state).toBe('committed');
+    expect((await store.cancel(b.commitment.seq, owner('c'.repeat(64))))?.state).toBe('committed');
+    expect((await store.channel('k'))?.committed).toBe(100n);
+    // cancelled entries are not replayed to the watcher
+    expect((await store.journal(seller, 0)).map((c) => c.seq)).toEqual([b.commitment.seq]);
   });
 });

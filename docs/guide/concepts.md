@@ -76,11 +76,57 @@ How fast units become stable depends on traffic: minutes under load, up to
 about 2 hours when the network has few transactions. That is normal, not an
 outage; clients keep retrying the same payment and never pay twice.
 
-## Components
+## Roles
 
-| Component         | Where                                                    | Runs by                   |
-| ----------------- | -------------------------------------------------------- | ------------------------- |
-| Facilitator       | `apps/facilitator`                                       | anyone (the operator)     |
-| Seller middleware | `@obbyx/sdk` (`ObytePaywall`, `Obyte*Server`)            | the seller                |
-| Seller watcher    | `apps/watcher`                                           | the seller (for channels) |
-| Client            | `@obbyx/sdk` (`payingFetch`), `obbyx` CLI, `@x402/fetch` | the buyer / agent         |
+Four parties take part in a payment; two more are outside our control (the
+Obyte network and, for channels, the channel autonomous agent).
+
+| Role                 | Where                                                    | Runs by                   | Holds                                    |
+| -------------------- | -------------------------------------------------------- | ------------------------- | ---------------------------------------- |
+| Client (buyer)       | `@obbyx/sdk` (`payingFetch`), `obbyx` CLI, `@x402/fetch` | the buyer / agent         | the buyer's key, its coins and channels  |
+| Seller API (paywall) | `@obbyx/sdk` (`ObytePaywall`, `Obyte*Server`)            | the seller                | the binding secret (HMAC), no funds key  |
+| Facilitator          | `apps/facilitator`                                       | the seller or an operator | no keys; settlement and voucher journals |
+| Seller watcher       | `apps/watcher`                                           | the seller (for channels) | the seller's key; every voucher received |
+
+- **Client.** Pays for a request: reads the seller's offer, signs a payment
+  (an Obyte unit for `exact`, a voucher for a channel) and retries the same
+  payment until it is final. It never broadcasts and never talks to the
+  facilitator; it only enforces its own limits (price cap, budget, fee cap).
+- **Seller API (paywall).** Sells the resource: issues offers bound to one
+  request (binding), checks that a payment matches that request, asks the
+  facilitator to verify and settle it, and serves each payment at most once.
+- **Facilitator.** Checks and settles payments for sellers. For `exact` it
+  validates the client's unit against the ledger and broadcasts it; for
+  channels it checks the voucher and keeps it in a journal until the seller's
+  watcher confirms it. It signs nothing and holds no funds.
+- **Seller watcher.** Protects the seller's channel earnings: stores every
+  voucher durably before it is reported paid (signed ack), refuses invalid
+  ones (signed nack), and closes channels or answers a dishonest close with a
+  fraud proof. Only needed for channel payments.
+- **Obyte network and channel AA** (external). The ledger that decides
+  finality and double spends; the base autonomous agent that holds channel
+  deposits and pays out on close.
+
+### Are they independent?
+
+As processes, yes: each runs separately with its own key (or none) and its
+own database, and they talk only through defined interfaces:
+
+- client ↔ seller API: x402 over HTTP (`PAYMENT-REQUIRED`,
+  `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`);
+- seller API → facilitator: `POST /verify`, `POST /settle` (optional API key);
+- watcher → facilitator: an outbound WebSocket at `/watcher`, with a signed
+  login and signed ack/nack receipts;
+- everyone ↔ an Obyte hub for ledger reads.
+
+Functionally they depend on each other in these ways:
+
+- `exact` needs only the client, the seller API and a facilitator.
+- Channel payments also need the seller's watcher online; without it they
+  are refused (fail-closed) and clients fall back to `exact`.
+- The watcher and its facilitator are the tightest pair: they share the
+  voucher journal and the protocol version, so upgrade them together
+  (facilitator first). Use one facilitator per seller address for channels.
+- The facilitator can be run by the seller itself or by a third party; it
+  never holds anyone's key, so even a compromised facilitator cannot sign a
+  payment.

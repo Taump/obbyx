@@ -75,7 +75,8 @@ The client signs an off-chain voucher for an Obyte AA channel; the seller watche
 | `invalid_batch_settlement_obyte_binding_mismatch` | The voucher does not carry the binding of the offer. | Pay the current offer. |
 | `invalid_batch_settlement_obyte_asset` | The channel asset is not accepted here. | Use a channel in an allowed asset. |
 | `invalid_batch_settlement_obyte_channel_busy` | Another voucher of this channel is in flight (one at a time per channel). | Retry after the previous payment completes. |
-| `invalid_batch_settlement_obyte_watcher_unavailable` | The seller watcher refused the voucher or is offline / underfunded. | Seller: start the watcher and fund it (WATCHER_MIN_BYTES). |
+| `invalid_batch_settlement_obyte_watcher_unavailable` | The seller watcher is offline, its heartbeat is stale, or it is underfunded. | Seller: start the watcher and fund it (WATCHER_MIN_BYTES). |
+| `invalid_batch_settlement_obyte_voucher_refused` | The seller's watcher signed a refusal (nack) of this voucher: it is cancelled, not charged, and the channel is free again. | Client: pay again (a new voucher). Seller: check the watcher log for the reason. |
 | `invalid_batch_settlement_obyte_ledger_unavailable` | The hub did not answer while reading the channel; the outcome is unknown. | Repeat the same request later; it never pays twice. |
 | `invalid_batch_settlement_obyte_quote_expired` | The offer `validUntil` has passed. | Request a new offer. |
 

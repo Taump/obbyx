@@ -98,6 +98,8 @@ export const SENSITIVE_FIELDS: readonly string[] = [
   'cookie',
   'challengeSignature',
   'privateKey',
+  'wif',
+  'packageJson',
   'mnemonic',
   'seed',
   'password',

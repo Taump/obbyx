@@ -5,24 +5,30 @@ import {
   parseChannelDefinition,
   verifySignedPackage,
 } from '@obbyx/obyte';
-import { createHash } from 'node:crypto';
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
 import {
   type CommitmentMessage,
+  type ReceiptKind,
+  WATCHER_PROTOCOL_VERSION,
   canonical,
   hubCall,
   loginMessage,
+  packageHashOf,
+  receiptMessage,
   serverMessageSchema,
   voucherMessageSchema,
 } from '@obbyx/x402-obyte';
-import type { WatcherStore } from '../storage/store.js';
+import type { KnownChannel, WatcherStore } from '../storage/store.js';
 
 /**
  * Link from the seller's watcher to the facilitator (`/watcher` WebSocket).
  * Logs in with the seller key, sends its cursor, then for every voucher:
  * validates it independently (client signature, channel of THIS seller from
  * the on-chain definition, consistent fields), stores it durably and only then
- * acks. An invalid voucher is never acked, so it is never reported as paid.
+ * sends a SIGNED ack for its exact package. An invalid voucher is never acked,
+ * so it is never reported as paid; a definitely refused one gets a signed
+ * nack (the facilitator cancels it and frees the channel). A transient
+ * problem (hub unreachable) gets no answer: the voucher is replayed later.
  */
 export interface FacilitatorLinkOptions {
   readonly url: string;
@@ -117,6 +123,7 @@ export class FacilitatorLink {
         ws.send(
           JSON.stringify({
             type: 'hello',
+            protocol: WATCHER_PROTOCOL_VERSION,
             network: this.options.network.caip2,
             login,
             cursor: await this.options.store.cursor(),
@@ -148,15 +155,26 @@ export class FacilitatorLink {
   }
 
   private async onCommitment(ws: WebSocket, msg: CommitmentMessage): Promise<void> {
-    const log = this.log.child({
-      seq: msg.seq,
-      aa: msg.aa,
-      proofId: createHash('sha256').update(canonical(msg.signedPackage)).digest('hex'),
-    });
-    const problem = await this.validate(msg);
-    if (typeof problem === 'string') {
-      log.error({ problem }, 'voucher rejected — NOT acked');
-      return;
+    const packageHash = packageHashOf(msg.signedPackage);
+    const log = this.log.child({ seq: msg.seq, aa: msg.aa, proofId: packageHash });
+    const reply = (kind: ReceiptKind, reason?: string) =>
+      this.sendReceipt(ws, kind, msg.seq, packageHash, reason);
+    const verdict = await this.validate(msg);
+    switch (verdict.kind) {
+      case 'transient':
+        log.warn({ problem: verdict.reason }, 'cannot validate the voucher now — no answer yet');
+        return;
+      case 'anomaly':
+        // Answering would let whoever altered the unsigned envelope cancel a
+        // valid voucher: no answer, the operator investigates.
+        log.error({ problem: verdict.reason }, 'INVARIANT ALERT: voucher envelope — not answered');
+        return;
+      case 'refuse':
+        log.error({ problem: verdict.reason }, 'voucher refused — NOT stored, nacked');
+        reply('nack', verdict.reason);
+        return;
+      case 'ok':
+        break;
     }
     const saved = await this.options.store.saveVoucher({
       seq: msg.seq,
@@ -167,31 +185,46 @@ export class FacilitatorLink {
       paymentAmount: BigInt(msg.paymentAmount),
       binding: msg.binding,
       packageJson: canonical(msg.signedPackage),
-      channel: problem,
+      channel: verdict.channel,
     });
+    if (saved.kind === 'seq_conflict') {
+      // Neither ack nor nack: our stored voucher under this seq is real; the
+      // facilitator's journal disagrees with ours and needs the operator.
+      log.error(
+        'INVARIANT ALERT: this seq already holds a different voucher (facilitator journal reset or another facilitator?) — not answered',
+      );
+      return;
+    }
     if (saved.kind === 'not_increasing') {
       // Never pay for a request twice: not acked, so the facilitator never
       // reports it paid. Means the same channel is used through another
       // facilitator (or a facilitator bug) — needs the operator.
       log.error(
         { amountSpent: msg.amountSpent, best: saved.best.toString() },
-        'INVARIANT ALERT: voucher does not raise the cumulative amount — NOT acked',
+        'INVARIANT ALERT: voucher does not raise the cumulative amount — NOT stored, nacked',
       );
+      reply('nack', 'not_increasing');
       return;
     }
-    ack(ws, msg.seq); // only after the durable write (and again for a re-delivery)
+    reply('ack'); // only after the durable write (and again for a re-delivery)
     log.info({ amountSpent: msg.amountSpent }, 'voucher stored and acked');
   }
 
-  /** Returns the channel on success, or a reason string. */
-  private async validate(msg: CommitmentMessage) {
-    if (msg.network !== this.options.network.caip2) return 'wrong network';
+  /**
+   * `refuse` (nacked) ONLY for reasons intrinsic to the client-signed package
+   * and the on-chain channel; a mismatch with the unsigned envelope is an
+   * `anomaly` (see watcher-protocol.ts, "Receipts"); `transient` cannot be
+   * judged now and is replayed later.
+   */
+  private async validate(msg: CommitmentMessage): Promise<Verdict> {
+    if (msg.network !== this.options.network.caip2)
+      return { kind: 'anomaly', reason: 'wrong network' };
     const verified = verifySignedPackage<unknown>(msg.signedPackage, {
       network: this.options.network,
     });
-    if (!verified.ok) return `bad signature: ${verified.message}`;
+    if (!verified.ok) return { kind: 'refuse', reason: `bad signature: ${verified.message}` };
     const v = voucherMessageSchema.safeParse(verified.value.message);
-    if (!v.success) return 'malformed voucher';
+    if (!v.success) return { kind: 'refuse', reason: 'malformed voucher' };
     if (
       v.data.aa_address !== msg.aa ||
       v.data.period !== msg.period ||
@@ -199,7 +232,7 @@ export class FacilitatorLink {
       String(v.data.payment_amount) !== msg.paymentAmount ||
       v.data.binding !== msg.binding
     ) {
-      return 'voucher fields do not match the message';
+      return { kind: 'anomaly', reason: 'voucher fields do not match the message' };
     }
     let params = this.definitions.get(msg.aa);
     if (params === undefined) {
@@ -208,22 +241,56 @@ export class FacilitatorLink {
         () => this.options.client.api.getDefinition(msg.aa),
         this.options.hubTimeoutMs ?? 15_000,
       );
-      if (def.kind !== 'ok') return `cannot read channel definition: ${def.error}`;
+      if (def.kind !== 'ok')
+        return { kind: 'transient', reason: `cannot read channel definition: ${def.error}` };
+      // Our hub may not know a fresh AA yet: not a refusal.
+      if (def.value === null || def.value === undefined) {
+        return { kind: 'transient', reason: 'channel definition not known to our hub yet' };
+      }
       const parsed = parseChannelDefinition(msg.aa, def.value);
-      if (!parsed.ok) return parsed.message;
+      if (!parsed.ok) return { kind: 'refuse', reason: parsed.message };
       params = parsed.value;
       this.definitions.set(msg.aa, params);
     }
-    if (params.addressA !== this.options.seller) return 'channel does not pay this seller';
-    if (params.addressB !== verified.value.signer)
-      return 'voucher not signed by the channel client';
+    if (params.addressA !== this.options.seller) {
+      return { kind: 'refuse', reason: 'channel does not pay this seller' };
+    }
+    if (params.addressB !== verified.value.signer) {
+      return { kind: 'refuse', reason: 'voucher not signed by the channel client' };
+    }
     return {
-      aa: msg.aa,
-      network: msg.network,
-      payer: params.addressB,
-      asset: params.asset,
-      timeout: params.timeout,
+      kind: 'ok',
+      channel: {
+        aa: msg.aa,
+        network: msg.network,
+        payer: params.addressB,
+        asset: params.asset,
+        timeout: params.timeout,
+      },
     };
+  }
+
+  /**
+   * ack: the voucher is durably stored (the facilitator then reports it paid);
+   * nack: it never will be. Signed by the seller for this exact package.
+   */
+  private sendReceipt(
+    ws: WebSocket,
+    kind: ReceiptKind,
+    seq: number,
+    packageHash: string,
+    reason?: string,
+  ): void {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const receipt = obyte.utils.signMessage(
+      receiptMessage(kind, this.options.network.caip2, {
+        seq,
+        packageHash,
+        ...(reason === undefined ? {} : { reason }),
+      }),
+      { privateKey: this.options.privateKey, testnet: this.options.network.testnet },
+    );
+    ws.send(JSON.stringify({ type: kind, seq, receipt }));
   }
 
   /** Sends a heartbeat now (e.g. right after a close is announced). */
@@ -244,7 +311,7 @@ export class FacilitatorLink {
   }
 }
 
-/** Tells the facilitator a voucher is durably stored (it then reports it paid). */
-function ack(ws: WebSocket, seq: number): void {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ack', seq }));
-}
+/** Outcome of validating a commitment before it is stored. */
+type Verdict =
+  | { readonly kind: 'ok'; readonly channel: KnownChannel }
+  | { readonly kind: 'refuse' | 'transient' | 'anomaly'; readonly reason: string };

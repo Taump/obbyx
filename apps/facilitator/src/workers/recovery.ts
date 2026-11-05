@@ -32,9 +32,12 @@ export class RecoveryWorker {
     await this.running;
   }
 
+  /** One pass; never rejects (a rejected `void tick()` would crash the process). */
   tick(): Promise<void> {
     if (this.running !== undefined) return this.running;
-    this.running = this.run().finally(() => (this.running = undefined));
+    this.running = this.run()
+      .catch((err: unknown) => this.log.error({ err }, 'recovery pass failed'))
+      .finally(() => (this.running = undefined));
     return this.running;
   }
 
@@ -54,6 +57,9 @@ export class RecoveryWorker {
       } catch (err) {
         this.log.error({ err, proofId: record.unitHash }, 'recovery step failed');
       }
+      // Rotate whatever the outcome: a record stuck on an unreachable hub must
+      // not keep the oldest slots of every pass and starve the others.
+      await this.store.touch(record.key).catch(() => undefined);
     }
   }
 }

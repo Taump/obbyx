@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { ObbyxError } from '@obbyx/obyte';
+import { immediateTransaction } from '../util/sqlite.js';
 
 /**
  * Facilitator-side storage for `batch-settlement` (ADR-0003), sharing the
@@ -8,8 +9,9 @@ import { ObbyxError } from '@obbyx/obyte';
  * - `batch_channels`: per (network, aa) the committed cumulative amount for the
  *   current period and at most ONE pending commitment (serialization, MVP).
  * - `batch_commitments`: the journal. `seq` is global and monotonic; the seller's
- *   watcher reads it by cursor. An entry is `pending` until the watcher has
- *   durably stored it (ack), then `committed`.
+ *   watcher reads it by cursor. An entry is `pending` until the watcher signed
+ *   that it durably stored it (ack → `committed`) or that it refuses it
+ *   (nack → `cancelled`, the channel is free again). Both are final.
  *
  * Amounts are decimal strings (BigInt in code).
  */
@@ -25,7 +27,15 @@ export interface ChannelRow {
   readonly pendingSeq: number | null;
 }
 
-export type CommitmentState = 'pending' | 'committed';
+export type CommitmentState = 'pending' | 'committed' | 'cancelled';
+
+/** Who may settle a journal entry: the seller's watcher, for exactly this package. */
+export interface CommitmentOwner {
+  readonly payTo: string;
+  readonly network: string;
+  /** The packageHash the watcher signed in its receipt. */
+  readonly packageHash: string;
+}
 
 export interface CommitmentRow {
   readonly seq: number;
@@ -81,14 +91,27 @@ export interface BatchStore {
   /** Atomically: check the channel is free and the cumulative rule, append a pending entry. */
   appendPending(input: AppendInput): Promise<AppendResult>;
   /**
-   * pending → committed (idempotent); releases the channel. Only commits a
-   * voucher of `owner` (seller + network): a watcher can never ack — and thus
-   * commit — another seller's voucher. Returns undefined if not owned.
+   * pending → committed (idempotent); releases the channel. Only for the
+   * entry of `owner` (seller + network + the signed packageHash): a watcher can
+   * never commit another seller's voucher, nor one it did not sign for.
+   * Returns undefined if not owned; a cancelled entry is returned unchanged.
    */
-  commit(
-    seq: number,
-    owner: { payTo: string; network: string },
-  ): Promise<CommitmentRow | undefined>;
+  commit(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined>;
+  /**
+   * pending → cancelled (idempotent); releases the channel. Same ownership
+   * rule as commit. A committed entry is returned unchanged (never undone).
+   */
+  cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined>;
+}
+
+/** The entry belongs to `owner` (seller, network and the exact package). */
+export function ownedBy(
+  c: Pick<CommitmentRow, 'payTo' | 'network' | 'packageHash'>,
+  owner: CommitmentOwner,
+): boolean {
+  return (
+    c.payTo === owner.payTo && c.network === owner.network && c.packageHash === owner.packageHash
+  );
 }
 
 const SCHEMA = `
@@ -197,7 +220,9 @@ export class SqliteBatchStore implements BatchStore {
 
   async journal(payTo: string, cursor: number, limit = 500): Promise<CommitmentRow[]> {
     const rows = this.db
-      .prepare('SELECT * FROM batch_commitments WHERE pay_to = ? AND seq > ? ORDER BY seq LIMIT ?')
+      .prepare(
+        "SELECT * FROM batch_commitments WHERE pay_to = ? AND seq > ? AND state != 'cancelled' ORDER BY seq LIMIT ?",
+      )
       .all(payTo, cursor, limit) as unknown as CommitmentDbRow[];
     return rows.map(toCommitment);
   }
@@ -208,7 +233,7 @@ export class SqliteBatchStore implements BatchStore {
    * A new period (the channel was closed and reopened) resets `committed`.
    */
   async appendPending(input: AppendInput): Promise<AppendResult> {
-    return this.tx(() => {
+    return immediateTransaction(this.db, () => {
       let channel = this.channelSync(input.channelKey);
       const ts = this.now();
       if (channel === undefined || channel.period < input.period) {
@@ -291,39 +316,52 @@ export class SqliteBatchStore implements BatchStore {
   }
 
   /** Watcher acked `seq` (durably stored): pending → committed. Idempotent. */
-  async commit(
-    seq: number,
-    owner: { payTo: string; network: string },
-  ): Promise<CommitmentRow | undefined> {
-    return this.tx(() => {
-      const c = this.commitmentSync(seq);
-      if (c === undefined || c.payTo !== owner.payTo || c.network !== owner.network)
-        return undefined;
-      if (c.state === 'committed') return c;
-      const ts = this.now();
-      this.db
-        .prepare("UPDATE batch_commitments SET state = 'committed', committed_at = ? WHERE seq = ?")
-        .run(ts, seq);
-      this.db
-        .prepare(
-          `UPDATE batch_channels SET committed = ?, pending_seq = NULL, updated_at = ?
-            WHERE key = ? AND pending_seq = ? AND period = ?`,
-        )
-        .run(c.amountSpent.toString(), ts, c.channelKey, seq, c.period);
-      return this.commitmentSync(seq);
-    });
+  async commit(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined> {
+    return this.settle(seq, owner, 'committed');
   }
 
-  private tx<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const result = fn();
-      this.db.exec('COMMIT');
-      return result;
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
+  /** Watcher nacked `seq` (refused, not stored): pending → cancelled. Idempotent. */
+  async cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined> {
+    return this.settle(seq, owner, 'cancelled');
+  }
+
+  /**
+   * pending → `to` for the entry of `owner`, releasing its channel; a commit
+   * also advances the channel's committed amount. A final entry is returned
+   * unchanged, a foreign one is undefined.
+   */
+  private settle(
+    seq: number,
+    owner: CommitmentOwner,
+    to: 'committed' | 'cancelled',
+  ): CommitmentRow | undefined {
+    return immediateTransaction(this.db, () => {
+      const c = this.commitmentSync(seq);
+      if (c === undefined || !ownedBy(c, owner)) return undefined;
+      if (c.state !== 'pending') return c;
+      const ts = this.now();
+      if (to === 'committed') {
+        this.db
+          .prepare(
+            "UPDATE batch_commitments SET state = 'committed', committed_at = ? WHERE seq = ?",
+          )
+          .run(ts, seq);
+        this.db
+          .prepare(
+            `UPDATE batch_channels SET committed = ?, pending_seq = NULL, updated_at = ?
+              WHERE key = ? AND pending_seq = ? AND period = ?`,
+          )
+          .run(c.amountSpent.toString(), ts, c.channelKey, seq, c.period);
+      } else {
+        this.db.prepare("UPDATE batch_commitments SET state = 'cancelled' WHERE seq = ?").run(seq);
+        this.db
+          .prepare(
+            'UPDATE batch_channels SET pending_seq = NULL, updated_at = ? WHERE key = ? AND pending_seq = ?',
+          )
+          .run(ts, c.channelKey, seq);
+      }
+      return this.commitmentSync(seq);
+    });
   }
 }
 

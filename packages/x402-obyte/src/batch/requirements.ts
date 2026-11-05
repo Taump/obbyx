@@ -12,6 +12,7 @@ import {
   reject,
 } from '@obbyx/obyte';
 import { z } from 'zod';
+import { SHA256_HEX_RE } from '../util/format.js';
 
 export const BATCH_SCHEME = 'batch-settlement';
 
@@ -30,13 +31,15 @@ export const BATCH_REASONS = {
   binding: 'invalid_batch_settlement_obyte_binding_mismatch',
   busy: 'invalid_batch_settlement_obyte_channel_busy',
   watcher: 'invalid_batch_settlement_obyte_watcher_unavailable',
+  /** The seller's watcher signed that it will not store this voucher (nack). */
+  refused: 'invalid_batch_settlement_obyte_voucher_refused',
   ledger: 'invalid_batch_settlement_obyte_ledger_unavailable',
   quoteExpired: 'invalid_batch_settlement_obyte_quote_expired',
 } as const;
 
 export const batchExtraSchema = z
   .object({
-    binding: z.string().regex(/^[0-9a-f]{64}$/),
+    binding: z.string().regex(SHA256_HEX_RE),
     quoteId: z
       .string()
       .min(8)
@@ -63,7 +66,7 @@ export const voucherMessageSchema = z
     // Safe integers only: a larger JSON number cannot be read back exactly.
     amount_spent: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     payment_amount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    binding: z.string().regex(/^[0-9a-f]{64}$/),
+    binding: z.string().regex(SHA256_HEX_RE),
   })
   .strict();
 

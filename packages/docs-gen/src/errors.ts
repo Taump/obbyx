@@ -299,8 +299,13 @@ export const ERROR_GROUPS: readonly ErrorGroup[] = [
       ),
       f(
         'invalid_batch_settlement_obyte_watcher_unavailable',
-        'The seller watcher refused the voucher or is offline / underfunded.',
+        'The seller watcher is offline, its heartbeat is stale, or it is underfunded.',
         'Seller: start the watcher and fund it (WATCHER_MIN_BYTES).',
+      ),
+      f(
+        'invalid_batch_settlement_obyte_voucher_refused',
+        "The seller's watcher signed a refusal (nack) of this voucher: it is cancelled, not charged, and the channel is free again.",
+        'Client: pay again (a new voucher). Seller: check the watcher log for the reason.',
       ),
       f(
         'invalid_batch_settlement_obyte_ledger_unavailable',

@@ -90,17 +90,15 @@ export function buildFacilitator(deps: FacilitatorDeps): FacilitatorApp {
       status === 413 ? 'payload_too_large' : status === 400 ? 'invalid_json' : 'internal_error';
     void reply
       .status(status)
-      .send(
-        request.url.startsWith('/settle')
-          ? { success: false, errorReason: reason, transaction: '', network: defaultNetwork }
-          : { isValid: false, invalidReason: reason },
-      );
+      .send(rejectionBody(request.routeOptions.url ?? request.url, reason, defaultNetwork));
   });
 
   // /verify and /settle are the externally reachable payment endpoints.
   const guard = createAccessGuard({ apiKeys: config.apiKeys, ratePerMinute: config.ratePerMinute });
   http.addHook('onRequest', async (request, reply) => {
-    const path = request.url.split('?')[0];
+    // Decide on the MATCHED route, never on the raw URL: the router decodes
+    // percent-escapes, so `/%76erify` reaches the /verify handler.
+    const path = request.routeOptions.url;
     if (path !== '/verify' && path !== '/settle') return;
     const rejection = guard(request);
     if (rejection === undefined) return;

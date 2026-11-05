@@ -35,7 +35,15 @@ export interface ExactObyteClientOptions {
   readonly composer?: ReservingComposer;
   /** Refuse units whose network fees (headers + payload + tps) exceed this (bytes). */
   readonly maxFee?: bigint;
+  /**
+   * Refuse offers valid longer than this from now (seconds, default 3600). The
+   * signed unit's inputs stay reserved until `validUntil`, so an unbounded
+   * seller-chosen `validUntil` could lock the wallet's coins indefinitely.
+   */
+  readonly maxQuoteTtlSeconds?: number;
 }
+
+const DEFAULT_MAX_QUOTE_TTL_SECONDS = 3600;
 
 /**
  * Inputs of a signed unit stay reserved at least until the offer expires plus
@@ -116,8 +124,16 @@ export class ExactObyteClient implements SchemeNetworkClient {
     ) {
       throw new ObbyxError('amount_over_limit', 'Price exceeds maxAmountPerPayment');
     }
-    if (req.extra.validUntil < Math.floor(Date.now() / 1000)) {
+    const now = Math.floor(Date.now() / 1000);
+    if (req.extra.validUntil < now) {
       throw new ObbyxError('quote_expired', 'The payment offer has expired');
+    }
+    const maxTtl = this.options.maxQuoteTtlSeconds ?? DEFAULT_MAX_QUOTE_TTL_SECONDS;
+    if (req.extra.validUntil > now + maxTtl) {
+      throw new ObbyxError(
+        'quote_too_long',
+        `The payment offer is valid for more than ${maxTtl} s (validUntil too far ahead)`,
+      );
     }
     return req;
   }

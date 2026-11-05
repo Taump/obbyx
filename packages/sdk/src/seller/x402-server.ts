@@ -23,9 +23,9 @@ import {
   EXACT_SCHEME,
   batchExtraSchema,
   bindingsEqual,
-  canonical,
   exactExtraSchema,
-  sha256Hex,
+  packageHashOf,
+  voucherPackageOf,
 } from '@obbyx/x402-obyte';
 import type { ConsumedProofsStore } from './consumed-proofs.js';
 import { DEFAULT_QUOTE_TTL_SECONDS, DEFAULT_SERVING_LEASE_SECONDS } from './defaults.js';
@@ -313,10 +313,8 @@ export class ObyteBatchServer extends ObyteSchemeServer {
       staticExtra: { baseAa: CHANNEL_BASE_AA, minTimeout: options.minChannelTimeoutSeconds },
       acceptedExtra: (extra) => batchExtraSchema.parse(extra),
       proofOf: (payload) => {
-        const pkg = payload['signedPackage'];
-        return pkg !== null && typeof pkg === 'object'
-          ? { kind: 'voucher', id: sha256Hex(canonical(pkg)) }
-          : undefined;
+        const pkg = voucherPackageOf(payload);
+        return pkg === undefined ? undefined : { kind: 'voucher', id: packageHashOf(pkg) };
       },
     });
   }

@@ -14,9 +14,19 @@ export interface WatcherHealth {
   readonly closing?: boolean;
 }
 
+/**
+ * `acked`: the seller's watcher signed that it durably stored this voucher
+ * (the journal entry is committed). `refused`: it signed that it will never
+ * store it (the entry is cancelled). `timeout`: unknown — stays pending.
+ */
+export type DeliveryOutcome =
+  | { readonly kind: 'acked' }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'timeout' };
+
 export interface WatcherGateway {
   /** Is a watcher for this seller connected, recent and funded for defensive triggers? */
   health(payTo: string, network: string, aa?: string): WatcherHealth;
-  /** Pushes a commitment and waits for the durable ack (or times out). */
-  deliver(commitment: CommitmentRow, timeoutMs: number): Promise<'acked' | 'timeout'>;
+  /** Pushes a commitment and waits for the watcher's signed ack or nack (or times out). */
+  deliver(commitment: CommitmentRow, timeoutMs: number): Promise<DeliveryOutcome>;
 }

@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { ObbyxError } from '@obbyx/obyte';
+import { immediateTransaction } from '../util/sqlite.js';
 
 /**
  * Settlement state machine storage for the `exact` scheme (ADR-0002, ADR-0005).
@@ -212,7 +213,7 @@ export class SqliteSettlementStore implements SettlementStore {
    * Returns the stored record and whether this call created it.
    */
   async claim(input: NewSettlement): Promise<{ created: boolean; record: SettlementRecord }> {
-    return this.tx(() => {
+    return immediateTransaction(this.db, () => {
       const existing = this.getSync(input.key);
       if (existing !== undefined) return { created: false, record: existing };
       const ts = this.now();
@@ -252,7 +253,7 @@ export class SqliteSettlementStore implements SettlementStore {
     to: SettlementState,
     patch: TransitionPatch = {},
   ): Promise<SettlementRecord | undefined> {
-    return this.tx(() => {
+    return immediateTransaction(this.db, () => {
       const current = this.getSync(key);
       if (current === undefined || !from.includes(current.state)) return undefined;
       const ts = this.now();
@@ -358,18 +359,6 @@ export class SqliteSettlementStore implements SettlementStore {
     if (record === undefined)
       throw new ObbyxError('store_inconsistent', `Missing settlement ${key}`);
     return record;
-  }
-
-  private tx<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const result = fn();
-      this.db.exec('COMMIT');
-      return result;
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
-    }
   }
 }
 

@@ -346,5 +346,11 @@ describe('ExactObyteClient fee cap', () => {
       code: 'fee_over_limit',
     });
     expect(reservations.rows()).toHaveLength(0);
+    // a far-future validUntil would keep the inputs reserved for ever: refused before composing
+    const longQuote = { ...req, extra: { ...req.extra, validUntil: 9_000_000_000_000 } };
+    await expect(client.createPaymentPayload(2, longQuote)).rejects.toMatchObject({
+      code: 'quote_too_long',
+    });
+    expect(reservations.rows()).toHaveLength(0);
   });
 });

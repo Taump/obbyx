@@ -9,7 +9,9 @@ export function registerDiscoveryRoutes(
 ): void {
   http.get('/discovery/resources', async (request, reply) => {
     if (catalog === undefined) return reply.status(404).send({ error: 'discovery disabled' });
-    const q = resourcesQuerySchema.parse(request.query);
+    const parsed = resourcesQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: 'invalid query' });
+    const q = parsed.data;
     const { items, total } = await catalog.list({
       ...filtersOf(q),
       offset: q.offset,

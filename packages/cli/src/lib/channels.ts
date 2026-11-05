@@ -161,9 +161,12 @@ async function closeCommand({ args, ctx, store, opts }: ChannelRun): Promise<voi
       'A voucher has an unknown outcome; retry that request before closing',
     );
   }
-  const unit = await closeChannel(opts, ch.aa, ch.period, ch.committed);
+  // Declare the highest amount we ever signed, not the last confirmed one: a
+  // seller holding a higher voucher would otherwise take the whole channel
+  // with a fraud proof. At worst this pays for one unserved request.
+  const unit = await closeChannel(opts, ch.aa, ch.period, ch.maxSigned);
   ctx.out(
-    `Close requested for period ${ch.period}, declaring ${gbyte(ch.committed)} spent: ${unit}`,
+    `Close requested for period ${ch.period}, declaring ${gbyte(ch.maxSigned)} spent: ${unit}`,
   );
   ctx.out(
     `The seller confirms at once if this is right; otherwise run \`obbyx channel confirm ${ch.aa}\` after ${ch.timeout} s.`,

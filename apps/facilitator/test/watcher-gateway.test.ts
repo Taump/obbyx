@@ -6,6 +6,8 @@ import {
   SqliteBatchStore,
   SqliteSettlementStore,
   loginMessage,
+  packageHashOf,
+  receiptMessage,
 } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WsWatcherGateway } from '../src/watcher/gateway.js';
@@ -22,7 +24,10 @@ let store: SqliteBatchStore;
 let url: string;
 let now: number;
 
-const voucher = (amountSpent: bigint, hash: string, payTo = seller): AppendInput => ({
+/** A distinct package per tag; its packageHash is the real hash the watcher signs. */
+const pkgOf = (tag: string) => ({ signed_message: { tag } });
+
+const voucher = (amountSpent: bigint, tag: string, payTo = seller): AppendInput => ({
   channelKey: `${NET}:aa:${payTo}`,
   network: NET,
   aa: 'X'.repeat(32),
@@ -33,9 +38,25 @@ const voucher = (amountSpent: bigint, hash: string, payTo = seller): AppendInput
   amountSpent,
   paymentAmount: 100n,
   binding: 'b'.repeat(64),
-  packageHash: hash,
-  packageJson: '{"signed_message":{}}',
+  packageHash: packageHashOf(pkgOf(tag)),
+  packageJson: JSON.stringify(pkgOf(tag)),
 });
+
+/** A receipt as the real watcher signs it. */
+const receipt = (
+  type: 'ack' | 'nack',
+  seq: number,
+  packageHash: string,
+  key: Uint8Array = sellerKey,
+) =>
+  JSON.stringify({
+    type,
+    seq,
+    receipt: obyte.utils.signMessage(
+      receiptMessage(type, NET, { seq, packageHash, reason: 'not_increasing' }),
+      { privateKey: key, testnet: true },
+    ),
+  });
 
 /** Minimal watcher client (the real one lives in apps/watcher). */
 async function connectWatcher(opts: {
@@ -44,7 +65,10 @@ async function connectWatcher(opts: {
   bytes?: string;
   network?: string;
   signNetwork?: boolean;
-  autoAck?: boolean;
+  /** null = a version-1 watcher (no protocol field). */
+  protocol?: number | null;
+  /** How the watcher answers commitments (default: signed ack). */
+  answer?: 'ack' | 'nack' | 'none';
 }) {
   const ws = new WebSocket(`${url}/watcher`);
   const received: ServerMessage[] = [];
@@ -65,6 +89,7 @@ async function connectWatcher(opts: {
       ws.send(
         JSON.stringify({
           type: 'hello',
+          ...(opts.protocol === null ? {} : { protocol: opts.protocol ?? 2 }),
           network: opts.network ?? NET,
           login,
           cursor: opts.cursor ?? 0,
@@ -72,8 +97,9 @@ async function connectWatcher(opts: {
         }),
       );
     }
-    if (msg.type === 'commitment' && opts.autoAck !== false)
-      ws.send(JSON.stringify({ type: 'ack', seq: msg.seq }));
+    const answer = opts.answer ?? 'ack';
+    if (msg.type === 'commitment' && answer !== 'none')
+      ws.send(receipt(answer, msg.seq, packageHashOf(msg.signedPackage)));
   });
   return { ws, received, closed };
 }
@@ -139,6 +165,14 @@ describe('watcher gateway', () => {
     w.ws.close();
   });
 
+  it('refuses an old (version 1) watcher at login with a clear reason', async () => {
+    const w = await connectWatcher({ protocol: null });
+    const closed = await w.closed;
+    expect(closed.code).toBe(4001);
+    expect(closed.reason).toMatch(/protocol 1 is not supported/);
+    expect(gateway.health(seller, NET).ok).toBe(false);
+  });
+
   it('rejects a login signed for another network', async () => {
     const w = await connectWatcher({ signNetwork: false });
     expect((await w.closed).code).toBe(4001);
@@ -150,7 +184,7 @@ describe('watcher gateway', () => {
     await until(() => gateway.health(seller, NET).ok);
     const appended = await store.appendPending(voucher(100n, 'h1'));
     if (!appended.ok) throw new Error('append failed');
-    expect(await gateway.deliver(appended.commitment, 1000)).toBe('acked');
+    expect(await gateway.deliver(appended.commitment, 1000)).toEqual({ kind: 'acked' });
     expect((await store.commitment(appended.commitment.seq))?.state).toBe('committed');
     w.ws.close();
   });
@@ -158,10 +192,10 @@ describe('watcher gateway', () => {
   it('no ack → timeout; nobody connected → timeout immediately', async () => {
     const appended = await store.appendPending(voucher(100n, 'h2'));
     if (!appended.ok) throw new Error('append failed');
-    expect(await gateway.deliver(appended.commitment, 100)).toBe('timeout');
-    const w = await connectWatcher({ autoAck: false });
+    expect(await gateway.deliver(appended.commitment, 100)).toEqual({ kind: 'timeout' });
+    const w = await connectWatcher({ answer: 'none' });
     await until(() => gateway.health(seller, NET).ok);
-    expect(await gateway.deliver(appended.commitment, 100)).toBe('timeout');
+    expect(await gateway.deliver(appended.commitment, 100)).toEqual({ kind: 'timeout' });
     expect((await store.commitment(appended.commitment.seq))?.state).toBe('pending');
     w.ws.close();
   });
@@ -192,9 +226,46 @@ describe('watcher gateway', () => {
     if (!foreign.ok) throw new Error('append failed');
     const w = await connectWatcher({});
     await until(() => w.received.some((m) => m.type === 'welcome'));
-    w.ws.send(JSON.stringify({ type: 'ack', seq: foreign.commitment.seq }));
+    // signed by us, for the foreign entry's real package: still not ours
+    w.ws.send(receipt('ack', foreign.commitment.seq, foreign.commitment.packageHash));
+    w.ws.send(receipt('nack', foreign.commitment.seq, foreign.commitment.packageHash));
     await new Promise((r) => setTimeout(r, 100));
     expect((await store.commitment(foreign.commitment.seq))?.state).toBe('pending');
+    w.ws.close();
+  });
+
+  it('a signed nack cancels the voucher and frees the channel', async () => {
+    const w = await connectWatcher({ answer: 'nack' });
+    await until(() => gateway.health(seller, NET).ok);
+    const appended = await store.appendPending(voucher(100n, 'n1'));
+    if (!appended.ok) throw new Error('append failed');
+    expect(await gateway.deliver(appended.commitment, 1000)).toEqual({
+      kind: 'refused',
+      reason: 'not_increasing',
+    });
+    expect((await store.commitment(appended.commitment.seq))?.state).toBe('cancelled');
+    expect((await store.channel(appended.commitment.channelKey))?.pendingSeq).toBeNull();
+    w.ws.close();
+  });
+
+  it('forged receipts change nothing: bare seq, wrong signer, wrong package', async () => {
+    const w = await connectWatcher({ answer: 'none' });
+    await until(() => gateway.health(seller, NET).ok);
+    const appended = await store.appendPending(voucher(100n, 'g1'));
+    if (!appended.ok) throw new Error('append failed');
+    const { seq, packageHash } = appended.commitment;
+    const delivery = gateway.deliver(appended.commitment, 300);
+    // a receipt signed by someone other than the seller
+    w.ws.send(receipt('ack', seq, packageHash, testKey('mallory')));
+    // the seller's signature for another package under this seq (journal reset)
+    w.ws.send(receipt('ack', seq, packageHashOf(pkgOf('other'))));
+    w.ws.send(receipt('nack', seq, packageHashOf(pkgOf('other'))));
+    await new Promise((r) => setTimeout(r, 100));
+    expect((await store.commitment(seq))?.state).toBe('pending'); // socket still open: all checked
+    // the old protocol's bare ack (what a relay could forge): malformed, connection dropped
+    w.ws.send(JSON.stringify({ type: 'ack', seq }));
+    expect(await delivery).toEqual({ kind: 'timeout' });
+    expect((await store.commitment(seq))?.state).toBe('pending');
     w.ws.close();
   });
 

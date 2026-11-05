@@ -108,7 +108,10 @@ export async function payingFetch(
       return { response, ...(settle ? { payment: settle } : {}), paymentHeader: header };
     }
     if (Date.now() > deadline) throw new PaymentPendingError(header, settle.transaction);
-    const retryAfterMs = Math.min(15, Number(response.headers.get('Retry-After') ?? 5)) * 1000;
+    const retryAfter = Number(response.headers.get('Retry-After') ?? 5);
+    // An HTTP-date or garbage would be NaN (a ~1 ms busy loop): fall back to 5 s.
+    const retryAfterMs =
+      (Number.isFinite(retryAfter) ? Math.min(15, Math.max(1, retryAfter)) : 5) * 1000;
     const wait = Math.max(0, Math.min(retryAfterMs, deadline - Date.now()));
     log.info(
       { transaction: settle.transaction, waitMs: wait },
@@ -180,9 +183,12 @@ async function signPayment(
 
 /**
  * Applies the final answer: the channel voucher is confirmed or released, and
- * the budget reservation is spent on success and released ONLY on a definite
- * refusal (402: the payment was not used). Anything else (5xx, 409, no
- * settlement info) is an unknown outcome: the reservation stays counted (I7).
+ * the budget reservation is spent on success. It is released ONLY on a 402
+ * for a channel voucher: a refused voucher is superseded by the next one
+ * (cumulative amounts), so it can never be charged on top. An `exact` unit is
+ * complete and signed: the seller can still broadcast it whatever its 402
+ * says (the answer is not authenticated), so it stays counted. Anything else
+ * (5xx, 409, no settlement info) is an unknown outcome and stays counted (I7).
  */
 function recordOutcome(
   response: Response,
@@ -196,7 +202,7 @@ function recordOutcome(
   if (reservation === undefined || options.budget === undefined) return;
   if (settle?.success === true || (response.ok && settle === undefined)) {
     options.budget.spend(reservation);
-  } else if (response.status === 402) {
+  } else if (response.status === 402 && accepted?.scheme === BATCH_SCHEME) {
     options.budget.release(reservation);
   }
 }

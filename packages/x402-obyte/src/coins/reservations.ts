@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { ObbyxError } from '@obbyx/obyte';
 import { type Utxo, inputKey } from './selection.js';
+import { immediateTransaction } from '../util/sqlite.js';
 
 /** Durable (SQLite) reservations of the wallet's coins, bound to the unit that spends them. */
 export interface ReservationRow {
@@ -56,15 +57,14 @@ export class CoinReservations {
   /** Reserves all inputs atomically; fails if any is already reserved. */
   reserve(network: string, address: string, inputs: readonly Utxo[]): void {
     const ts = this.now();
-    this.db.exec('BEGIN IMMEDIATE');
     try {
-      const insert = this.db.prepare(
-        'INSERT INTO coin_reservations (input_key, network, address, payment_unit, reserved_at) VALUES (?, ?, ?, NULL, ?)',
-      );
-      for (const u of inputs) insert.run(inputKey(network, u), network, address, ts);
-      this.db.exec('COMMIT');
+      immediateTransaction(this.db, () => {
+        const insert = this.db.prepare(
+          'INSERT INTO coin_reservations (input_key, network, address, payment_unit, reserved_at) VALUES (?, ?, ?, NULL, ?)',
+        );
+        for (const u of inputs) insert.run(inputKey(network, u), network, address, ts);
+      });
     } catch (err) {
-      this.db.exec('ROLLBACK');
       throw new ObbyxError('coins_reserved', 'An input is already reserved by another payment', {
         cause: err,
       });

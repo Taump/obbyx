@@ -33,6 +33,11 @@ describe('protection of /verify and /settle', () => {
     expect((await verify()).json()).toMatchObject({ invalidReason: 'unauthorized' });
     expect((await verify({ authorization: 'Bearer wrong' })).statusCode).toBe(401);
     expect((await verify({}, '/verify?x=1')).statusCode).toBe(401);
+    // percent-encoded paths are routed to the same handlers: still guarded
+    expect((await verify({}, '/%76erify')).statusCode).toBe(401);
+    expect(
+      (await app.http.inject({ method: 'POST', url: '/%73ettle', payload: {} })).statusCode,
+    ).toBe(401);
     const settle = await app.http.inject({ method: 'POST', url: '/settle', payload: {} });
     expect(settle.json()).toMatchObject({
       success: false,
