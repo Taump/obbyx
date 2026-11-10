@@ -1,9 +1,5 @@
-/* eslint-disable */
-// Phase-0 executable check (docs/adr/0003, docs/adr/0001).
-//
-// Runs the deployed base channel AA (channels_base_aa_1.1.ojson, identical to
-// 4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ on mainnet/testnet) in a local aa-testkit
-// network and checks two assumptions of the obbyx design:
+// Executable check of the obbyx design assumptions (docs/adr/0003, docs/adr/0001)
+// against the base channel AA in a local aa-testkit network:
 //
 //  1. A client-signed package may carry extra fields (`binding`,
 //     `payment_amount`) and still be accepted by the AA as `sentByPeer`
@@ -33,9 +29,11 @@ function dataOf(unitObj) {
 }
 
 describe('obbyx: base channel AA with extra fields in signed packages', function () {
+  this.timeout(600 * 1000);
+
   before(async () => {
     this.network = await Network.create()
-      .with.agent({ base_aa: path.join(__dirname, 'channels_base_aa_1.1.ojson') })
+      .with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.1.oscript') })
       .with.wallet({ seller: 1e9 }) // party A (payTo)
       .with.wallet({ client: 10e9 }) // party B (payer)
       .with.wallet({ stranger: 1e9 }) // unrelated third party (e.g. a facilitator)
@@ -92,19 +90,19 @@ describe('obbyx: base channel AA with extra fields in signed packages', function
       transferredFromMe: 0,
       sentByPeer: pkg,
     });
-    expect(closing.bounced, closing.response.error).to.be.false;
+    expect(closing.bounced, errMsg(closing.response.error)).to.be.false;
     const vars = (await this.network.deployer.readAAStateVars(this.aa)).vars;
     expect(vars.spentByB).to.equal(amountSpent);
     expect(vars.close_initiated_by).to.equal('A');
 
     // The non-initiator (client) may confirm at any time.
     const confirmed = await call(this.network.wallet.client, { confirm: 1, period });
-    expect(confirmed.bounced, confirmed.response.error).to.be.false;
+    expect(confirmed.bounced, errMsg(confirmed.response.error)).to.be.false;
     const { unitObj } = await this.network.deployer.getUnitInfo({ unit: confirmed.response_unit });
     expect(dataOf(unitObj).closed).to.equal(1);
     const toSeller = Utils.getExternalPayments(unitObj).find((p) => p.address === this.seller);
     // The party with the smaller final balance gets exactly its balance plus a
-    // refund of the 10000-byte bounce fee it paid for `close` (AA line 151);
+    // refund of the 10000-byte bounce fee it paid for `close` (case 'confirm closure');
     // the larger party receives the rest and pays the AA response fees.
     expect(toSeller.amount).to.equal(amountSpent + 10000);
   });
@@ -146,7 +144,7 @@ describe('obbyx: base channel AA with extra fields in signed packages', function
       period,
       transferredFromMe: 50000,
     });
-    expect(dishonest.bounced, dishonest.response.error).to.be.false;
+    expect(dishonest.bounced, errMsg(dishonest.response.error)).to.be.false;
 
     // Someone who saw the real package (amount_spent 500000) submits a fraud proof.
     const realPkg = await clientSigned(this, {
@@ -156,7 +154,7 @@ describe('obbyx: base channel AA with extra fields in signed packages', function
       binding: BINDING,
     });
     const proof = await call(this.network.wallet.stranger, { fraud_proof: 1, sentByPeer: realPkg });
-    expect(proof.bounced, proof.response.error).to.be.false;
+    expect(proof.bounced, errMsg(proof.response.error)).to.be.false;
 
     const { unitObj } = await this.network.deployer.getUnitInfo({ unit: proof.response_unit });
     const payments = Utils.getExternalPayments(unitObj);

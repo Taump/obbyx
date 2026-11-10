@@ -10,7 +10,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 
 	before(async () => {
 		this.network = await Network.create()
-			.with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.1.ojson') })
+			.with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.1.oscript') })
 			.with.wallet({ alice: 10e9 })
 			.with.wallet({ bob: 10e9 })
 			.with.explorer()
@@ -47,7 +47,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -76,7 +76,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -123,7 +123,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.equal('wrong period');
+		expect(errMsg(response.response.error)).to.be.equal('wrong period');
 		expect(response.bounced).to.be.true
 		
 	}).timeout(15000)
@@ -152,7 +152,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.equal('signed for a different period of this channel');
+		expect(errMsg(response.response.error)).to.be.equal('signed for a different period of this channel');
 		expect(response.bounced).to.be.true
 		
 	}).timeout(15000)
@@ -181,7 +181,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -218,7 +218,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.equal('too early')
+		expect(errMsg(response.response.error)).to.be.equal('too early')
 		expect(response.bounced).to.be.true
 		
 	}).timeout(15000)
@@ -261,7 +261,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -304,7 +304,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -353,7 +353,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -391,7 +391,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.equal('too early')
+		expect(errMsg(response.response.error)).to.be.equal('too early')
 		expect(response.bounced).to.be.true
 		
 	}).timeout(15000)
@@ -413,7 +413,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -458,7 +458,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -486,7 +486,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -534,7 +534,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -581,7 +581,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.equal("the peer didn't lie in his favor")
+		expect(errMsg(response.response.error)).to.be.equal("the peer didn't lie in his favor")
 		expect(response.bounced).to.be.true
 
 	}).timeout(15000)
@@ -610,7 +610,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })
@@ -651,7 +651,7 @@ describe('open-closed normally confirmed, open-closed timeout, open-closed fraud
 		expect(unit).to.be.validUnit
 
 		const { response } = await this.network.getAaResponseToUnit(unit)
-		expect(response.response.error).to.be.undefined
+		expect(errMsg(response.response.error)).to.be.undefined
 		expect(response.bounced).to.be.false
 
 		const { unitObj } = await this.network.deployer.getUnitInfo({ unit: response.response_unit })

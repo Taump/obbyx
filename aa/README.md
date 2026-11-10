@@ -1,18 +1,33 @@
 # Payment channel AA (base AA v1.1)
 
-`channels_base_aa_1.1.ojson` is the base autonomous agent of
-[aa-channels-lib](https://github.com/Papabyte/aa-channels-lib), copied without
-changes together with its original aa-testkit tests (`test/`, `package.json`).
+`channels_base_aa_1.1.oscript` is the base autonomous agent of
+[aa-channels-lib](https://github.com/Papabyte/aa-channels-lib) together with
+its original aa-testkit tests (`test/`, `package.json`).
 
-It is deployed at the same address on mainnet and testnet:
+The original `channels_base_aa_1.1.ojson` is deployed at the same address on
+mainnet and testnet:
 
 ```
 4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ
 ```
 
+`channels_base_aa_1.1.oscript` is that AA rewritten in modern Oscript
+(`require(...)` instead of `if (...) bounce(...)`, a shared
+`$get_spent_by_peer` function for checking the peer's signed package, formulas
+in backticks). The logic, the response data and the bounce messages are the
+same, and the original tests pass unchanged except for reading the error text
+(see `errMsg` in `test/bootload.js`). The changes are in
+`channels_base_aa_1.1.ojson-to-oscript.diff`.
+
+The AA address is the chash of the definition text, so the rewritten file has
+a **different address**, `5KHQT6E6SUVD35D7NVXWEKZNNNHG7ZVM`. It is deployed on
+testnet only; obbyx still uses `4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ`. The original
+`.ojson` is in the git history of this folder and on-chain (the definition of
+`4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ`).
+
 obbyx never deploys this file. Every channel is a **parameterized AA** that
-references this base AA; the file is kept here as the source of truth for
-reading, reviewing and testing the channel logic.
+references the deployed base AA; the file is kept here for reading, reviewing
+and testing the channel logic.
 
 - How obbyx uses channels: [docs/guide/channels.md](../docs/guide/channels.md)
 - Design and binding: [ADR-0003](../docs/adr/0003-batch-settlement-binding-and-watcher.md)
@@ -23,10 +38,13 @@ reading, reviewing and testing the channel logic.
 
 | Path | What it is |
 | --- | --- |
-| `channels_base_aa_1.1.ojson` | The base AA (Oscript). |
+| `channels_base_aa_1.1.oscript` | The base AA (modern Oscript). |
+| `channels_base_aa_1.1.ojson-to-oscript.diff` | Diff from the deployed `.ojson` to the `.oscript`. |
 | `test/test_with_bytes_1.1.oscript.js` | Scenarios for a channel in bytes (`asset: 'base'`). |
 | `test/test_with_assets_1.1.oscript.js` | The same scenarios for a channel in a custom asset. |
-| `test/bootload.js`, `test/mocha.opts` | mocha bootstrap: global `expect` and chai helpers from aa-testkit. |
+| `test/test_obbyx_binding.oscript.js` | obbyx: `binding`/`payment_amount` in signed packages, tampering, ADR-0001 fraud-proof risk. |
+| `test/test_obbyx_watcher_actions.oscript.js` | obbyx: exact `close`/`confirm`/`fraud_proof` triggers of the watcher and the CLI. |
+| `test/bootload.js`, `test/mocha.opts` | mocha bootstrap: global `expect`, `errMsg` and chai helpers from aa-testkit. |
 | `package.json` | Isolated test package (mocha, chai, aa-testkit). |
 
 ## Running the tests
@@ -49,10 +67,10 @@ npm test        # mocha --require test/bootload.js
 aa-testkit starts a local Obyte network (genesis node, witness, hub, wallets,
 explorer) in child processes; each suite takes up to a couple of minutes.
 
-The executable checks of the obbyx-specific assumptions (extra fields in the
-signed package, watcher triggers) live in
-[spikes/aa-channel-binding](../spikes/aa-channel-binding/) and use their own
-copy of the same `.ojson`.
+The obbyx-specific checks (formerly `spikes/aa-channel-binding`) run in the
+same suite: `test/test_obbyx_binding.oscript.js` (extra fields in the signed
+package, ADR-0001 fraud-proof risk) and `test/test_obbyx_watcher_actions.oscript.js`
+(the exact triggers of the seller watcher and the buyer CLI).
 
 ---
 
@@ -115,7 +133,7 @@ All per-period vars are reset to `false` (deleted) on close; `period` and
 
 The AA uses the default bounce fee of **10 000 bytes**: every trigger must
 carry at least 10 000 bytes, otherwise ocore bounces it before the AA runs.
-When a trigger bounces (any `bounce(...)` below, or no case matched), the
+When a trigger bounces (any failed `require(...)` below, or no case matched), the
 sender gets the money back minus 10 000 bytes, which stay on the AA. These
 retained fees end up with the larger party at close (see below).
 

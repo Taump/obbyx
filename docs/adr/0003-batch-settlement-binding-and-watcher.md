@@ -25,7 +25,7 @@ Known aa-channels-lib hazards:
 - on `payload.closing` the library auto-confirms if the declared amount is not
   lower than what it knows locally — dangerous if it is behind.
 
-Verified in a local aa-testkit network (`spikes/aa-channel-binding`): the AA
+Verified in a local aa-testkit network (`aa/test/test_obbyx_binding.oscript.js`): the AA
 accepts a client-signed package carrying extra fields (`binding`,
 `payment_amount`) in a seller-initiated close and pays the seller
 `amount_spent` (+10000-byte refund of its `close` bounce fee); changing

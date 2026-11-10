@@ -1,4 +1,3 @@
-/* eslint-disable */
 // Executable check of the exact AA triggers sent by the obbyx seller watcher
 // (apps/watcher/src/defender.ts) and the buyer CLI (packages/x402-obyte/src/batch/client.ts)
 // against the real base channel AA in a local aa-testkit network.
@@ -19,9 +18,11 @@ const DEPOSIT = 1e9;
 const binding = (n) => String(n).padStart(64, '0');
 
 describe('obbyx watcher/CLI triggers against the real channel AA', function () {
+  this.timeout(600 * 1000);
+
   before(async () => {
     this.network = await Network.create()
-      .with.agent({ base_aa: path.join(__dirname, 'channels_base_aa_1.1.ojson') })
+      .with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.1.oscript') })
       .with.wallet({ seller: 1e9 })
       .with.wallet({ client: 10e9 })
       .run();
@@ -90,7 +91,7 @@ describe('obbyx watcher/CLI triggers against the real channel AA', function () {
       transferredFromMe: 0,
       sentByPeer: pkg,
     });
-    expect(closing.bounced, closing.response.error).to.be.false;
+    expect(closing.bounced, errMsg(closing.response.error)).to.be.false;
     expect((await vars()).close_initiated_by).to.equal('A');
 
     const early = await trigger(this.network.wallet.seller, { confirm: 1, period });
@@ -98,7 +99,7 @@ describe('obbyx watcher/CLI triggers against the real channel AA', function () {
 
     await this.network.timetravel({ shift: `${TIMEOUT + 1}s` });
     const confirmed = await trigger(this.network.wallet.seller, { confirm: 1, period });
-    expect(confirmed.bounced, confirmed.response.error).to.be.false;
+    expect(confirmed.bounced, errMsg(confirmed.response.error)).to.be.false;
     expect((await payoutTo(confirmed, this.seller)).amount).to.equal(300000 + 10000);
     expect((await vars()).period).to.equal(period + 1);
   });
@@ -110,11 +111,11 @@ describe('obbyx watcher/CLI triggers against the real channel AA', function () {
       period,
       transferredFromMe: 200000,
     });
-    expect(closing.bounced, closing.response.error).to.be.false;
+    expect(closing.bounced, errMsg(closing.response.error)).to.be.false;
     expect((await vars()).spentByB).to.equal(200000);
 
     const confirmed = await trigger(this.network.wallet.seller, { confirm: 1, period });
-    expect(confirmed.bounced, confirmed.response.error).to.be.false;
+    expect(confirmed.bounced, errMsg(confirmed.response.error)).to.be.false;
     expect((await payoutTo(confirmed, this.seller)).amount).to.equal(200000 + 10000);
   });
 
@@ -126,10 +127,10 @@ describe('obbyx watcher/CLI triggers against the real channel AA', function () {
       period,
       transferredFromMe: 100,
     });
-    expect(closing.bounced, closing.response.error).to.be.false;
+    expect(closing.bounced, errMsg(closing.response.error)).to.be.false;
 
     const proof = await trigger(this.network.wallet.seller, { fraud_proof: 1, sentByPeer: pkg });
-    expect(proof.bounced, proof.response.error).to.be.false;
+    expect(proof.bounced, errMsg(proof.response.error)).to.be.false;
     const paid = await payoutTo(proof, this.seller);
     expect(paid.amount).to.be.above(before.balanceB - 20000);
     expect((await vars()).period).to.equal(period + 1);

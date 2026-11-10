@@ -7,7 +7,7 @@
     "test": "mocha --require test/bootload.js"
   },
   "dependencies": {
-    "aa-testkit": "git+https://github.com/papabyte/aa-testkit",
+    "aa-testkit": "git+https://github.com/valyakin/aa-testkit.git",
     "ocore": "git+https://github.com/byteball/ocore.git"
   },
   "devDependencies": {

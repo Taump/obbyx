@@ -17,7 +17,7 @@ no `$bFromParties` check). Any holder of a client-signed package with a higher
 `amount_spent` than the initiator declared can therefore take the channel
 funds. "The facilitator never submits fraud proofs" is a policy, not a
 technical guarantee. Confirmed in a local aa-testkit network:
-`spikes/aa-channel-binding`, test 2 — an unrelated address receives the whole
+`aa/test/test_obbyx_binding.oscript.js`, test 2 — an unrelated address receives the whole
 channel balance with a higher client-signed package.
 
 ## Decision

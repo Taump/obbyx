@@ -17,3 +17,8 @@ chai.Assertion.addChainableMethod('validUnit', (unit) => {
 chai.Assertion.addChainableMethod('validBase64', (b64) => {
 	new chai.Assertion(Utils.isValidBase64(b64)).to.be.true
 })
+
+// Since ocore "v2 error handling for AA" (byteball/ocore e8d1f31706) the error of a bounced
+// AA response is an object { message, formattedContext, codeLines, trace }; before that it was
+// a plain string. Returns the error text in both cases.
+global.errMsg = (err) => (err && typeof err === 'object' && err.message !== undefined) ? err.message : err
