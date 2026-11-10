@@ -1,0 +1,17 @@
+{
+  "name": "aa-channels-tests",
+  "version": "0.1.0",
+  "author": "Obyte",
+  "license": "MIT",
+  "scripts": {
+    "test": "mocha --require test/bootload.js"
+  },
+  "dependencies": {
+    "aa-testkit": "git+https://github.com/papabyte/aa-testkit",
+    "ocore": "git+https://github.com/byteball/ocore.git"
+  },
+  "devDependencies": {
+    "chai": "^4.2.0",
+    "mocha": "^6.2.0"
+  }
+}
