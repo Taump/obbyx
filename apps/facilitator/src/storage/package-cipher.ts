@@ -23,13 +23,27 @@ export class PackageCipher {
   }
 
   /**
-   * Loads the key file, creating it (mode 0600) when missing. A file readable by
-   * group/others is refused: the key protects funds.
+   * Loads the key file. A missing file is created (32 random bytes, mode 0600)
+   * only when `create` is set (the database holds no package yet). A file
+   * readable by group/others is refused.
    */
-  static fromFile(path: string): PackageCipher {
+  static fromFile(path: string, options: { create: boolean }): PackageCipher {
     if (!existsSync(path)) {
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, randomBytes(32).toString('base64'), { mode: 0o600, flag: 'wx' });
+      if (!options.create) {
+        throw new ObbyxError(
+          'invalid_config',
+          `PACKAGE_KEY_FILE ${path} does not exist, but the database already holds encrypted channel packages: restore the original key file (a new key could never decrypt them).`,
+        );
+      }
+      try {
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, randomBytes(32).toString('base64'), { mode: 0o600, flag: 'wx' });
+      } catch (err) {
+        throw new ObbyxError(
+          'invalid_config',
+          `Cannot create PACKAGE_KEY_FILE ${path} (${(err as Error).message}); create it yourself (32 random bytes, base64, mode 0600) on a read-only mount.`,
+        );
+      }
     }
     if (process.platform !== 'win32' && (statSync(path).mode & 0o077) !== 0) {
       throw new ObbyxError('invalid_config', `${path} must not be readable by others (chmod 600)`);

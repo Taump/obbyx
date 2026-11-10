@@ -1,5 +1,6 @@
 import { x402Facilitator } from '@x402/core/facilitator';
 import type { Network } from '@x402/core/types';
+import { CHANNEL_BASE_AA_NETWORKS } from '@obbyx/obyte';
 import type { Logger } from '@obbyx/obyte/logger';
 import {
   BatchObyteFacilitator,
@@ -31,7 +32,8 @@ export interface Mechanisms {
 /**
  * Registers the Obyte schemes on an x402 core facilitator (strategy per
  * scheme/network): `exact` for v2 and v1, `batch-settlement` for v2 when a
- * batch store and watcher gateway are given, and the Bazaar extension.
+ * batch store and watcher gateway are given (only on the networks where the
+ * channel base AA is deployed), and the Bazaar extension.
  */
 export function buildMechanisms(deps: MechanismDeps): Mechanisms {
   const { config, logger, store, clients } = deps;
@@ -52,8 +54,17 @@ export function buildMechanisms(deps: MechanismDeps): Mechanisms {
     ...time,
   });
 
+  const networks = config.networks.map((n) => n.network.caip2);
+  const batchNetworks = networks.filter((n) => CHANNEL_BASE_AA_NETWORKS.has(n));
+  const wantBatch = deps.batch !== undefined && config.batch.enabled;
+  if (wantBatch && batchNetworks.length < networks.length) {
+    logger.warn(
+      { networks: networks.filter((n) => !CHANNEL_BASE_AA_NETWORKS.has(n)) },
+      'batch-settlement is not served on these networks: the channel base AA v1.2 is not deployed there',
+    );
+  }
   const batch =
-    deps.batch !== undefined && config.batch.enabled
+    deps.batch !== undefined && wantBatch && batchNetworks.length > 0
       ? new BatchObyteFacilitator({
           clients,
           store: deps.batch.store,
@@ -68,14 +79,13 @@ export function buildMechanisms(deps: MechanismDeps): Mechanisms {
         })
       : undefined;
 
-  const networks = config.networks.map((n) => n.network.caip2);
   const core = new x402Facilitator().register(networks, exact);
   // x402 v1 (exact only): plain network names, same mechanism and store.
   core.registerV1(
     config.networks.map((n) => n.network.v1Name as Network),
     new ExactObyteFacilitatorV1(exact),
   );
-  if (batch !== undefined) core.register(networks, batch);
+  if (batch !== undefined) core.register(batchNetworks, batch);
   if (deps.bazaar) core.registerExtension({ key: 'bazaar' });
   return { core, exact, batch };
 }

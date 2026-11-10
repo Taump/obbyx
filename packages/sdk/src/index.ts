@@ -22,9 +22,11 @@ export {
 } from './seller/paywall.js';
 export {
   type PaidResponse,
+  PaymentOutcomeUnknownError,
   PaymentPendingError,
   type PayingFetchOptions,
   payingFetch,
+  paymentOutcomeUnknown,
 } from './client/paying-fetch.js';
 export {
   type BudgetLimits,
@@ -33,10 +35,10 @@ export {
   SpendingBudget,
 } from './client/budget.js';
 export {
-  ObyteBatchServer,
-  type ObyteBatchServerOptions,
-  ObyteExactServer,
-  type ObyteExactServerOptions,
+  BatchObyteServer,
+  type BatchObyteServerOptions,
+  ExactObyteServer,
+  type ExactObyteServerOptions,
   ObyteSchemeServer,
   type ObyteSchemeSpec,
   type ObyteSchemeServerOptions,

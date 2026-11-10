@@ -9,36 +9,104 @@ import {
   ownedBy,
 } from '@obbyx/x402-obyte';
 import type { BatchChannel, BatchCommitment, PrismaClient } from '../generated/prisma/client.js';
-import type { PackageCipher } from './package-cipher.js';
+import { ObbyxError } from '@obbyx/obyte';
+import type { Logger } from '@obbyx/obyte/logger';
+import { PackageCipher } from './package-cipher.js';
 
 type Tx = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+type CommitmentMeta = Omit<CommitmentRow, 'packageJson'>;
 
 /**
  * Prisma implementation of the batch-settlement BatchStore port (same rules as
  * SqliteBatchStore). Client-signed packages are encrypted at rest with
  * {@link PackageCipher}, and every read of a package is recorded in the
- * `events` table (`package_read`, ADR-0001).
+ * `events` table (`package_read`, ADR-0001). Lookups that need no package
+ * (`commitmentMeta`, `commit`, `cancel`) never decrypt one.
  */
 export class PrismaBatchStore implements BatchStore {
   constructor(
     private readonly prisma: PrismaClient,
     private readonly cipher: PackageCipher,
     private readonly now: () => number = () => Math.floor(Date.now() / 1000),
+    private readonly log?: Logger,
   ) {}
 
-  /** Decrypts rows and journals the access in the same transaction. */
-  private async open(tx: Tx, rows: BatchCommitment[], op: string): Promise<CommitmentRow[]> {
-    if (rows.length === 0) return [];
-    const ts = this.now();
-    await tx.event.createMany({
-      data: rows.map((r) => ({
-        ts,
-        key: r.channelKey,
-        kind: 'package_read',
-        data: JSON.stringify({ op, seq: r.seq, package: `sha256:${r.packageHash.slice(0, 16)}` }),
-      })),
+  /**
+   * The store with the key from `keyFile`, for startup. A key file is created
+   * only while the database holds no package; with stored packages a missing
+   * file or a key that decrypts none of the newest packages is refused (a new
+   * key would make every stored voucher undecryptable).
+   */
+  static async open(
+    prisma: PrismaClient,
+    keyFile: string,
+    log?: Logger,
+  ): Promise<PrismaBatchStore> {
+    const empty = (await prisma.batchCommitment.findFirst({ select: { seq: true } })) === null;
+    const cipher = PackageCipher.fromFile(keyFile, { create: empty });
+    const store = new PrismaBatchStore(prisma, cipher, undefined, log);
+    if (!empty) await store.assertKeyMatches();
+    return store;
+  }
+
+  /**
+   * Decrypts one of the newest packages (journaled like any read). Several are
+   * tried: AES-GCM cannot tell a damaged row from a wrong key, and one damaged
+   * row must not block startup.
+   */
+  private async assertKeyMatches(): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.batchCommitment.findMany({ orderBy: { seq: 'desc' }, take: 5 });
+      for (const row of rows) {
+        try {
+          await this.one(tx, row, 'key_check');
+          return;
+        } catch {
+          // try the next one
+        }
+      }
+      throw new ObbyxError(
+        'invalid_config',
+        `PACKAGE_KEY_FILE decrypts none of the ${rows.length} newest stored channel packages: it is not the key they were encrypted with. Restore the original key file.`,
+      );
     });
-    return rows.map((r) => toCommitment(r, this.cipher.decrypt(r.packageJson, r.packageHash)));
+  }
+
+  /**
+   * Decrypts rows and journals the access in the same transaction. With
+   * `skipDamaged` (replay lists) a row that cannot be decrypted is logged,
+   * journaled as `package_unreadable` and skipped, so it does not block the
+   * seller's other vouchers; otherwise it throws.
+   */
+  private async open(
+    tx: Tx,
+    rows: BatchCommitment[],
+    op: string,
+    skipDamaged = false,
+  ): Promise<CommitmentRow[]> {
+    const ts = this.now();
+    const opened: CommitmentRow[] = [];
+    const events = [];
+    for (const r of rows) {
+      const data = JSON.stringify({
+        op,
+        seq: r.seq,
+        package: `sha256:${r.packageHash.slice(0, 16)}`,
+      });
+      try {
+        opened.push(toCommitment(r, this.cipher.decrypt(r.packageJson, r.packageHash)));
+        events.push({ ts, key: r.channelKey, kind: 'package_read', data });
+      } catch (err) {
+        if (!skipDamaged) throw err;
+        this.log?.error(
+          { err, seq: r.seq, op },
+          'stored channel package cannot be decrypted; skipped',
+        );
+        events.push({ ts, key: r.channelKey, kind: 'package_unreadable', data });
+      }
+    }
+    if (events.length > 0) await tx.event.createMany({ data: events });
+    return opened;
   }
 
   private async one(
@@ -63,6 +131,14 @@ export class PrismaBatchStore implements BatchStore {
     });
   }
 
+  async commitmentMeta(packageHash: string): Promise<CommitmentMeta | undefined> {
+    const row = await this.prisma.batchCommitment.findUnique({
+      where: { packageHash },
+      omit: { packageJson: true },
+    });
+    return row === null ? undefined : toMeta(row);
+  }
+
   commitment(seq: number): Promise<CommitmentRow | undefined> {
     return this.prisma.$transaction(async (tx) =>
       this.one(tx, await tx.batchCommitment.findUnique({ where: { seq } }), 'by_seq'),
@@ -78,6 +154,7 @@ export class PrismaBatchStore implements BatchStore {
           orderBy: { seq: 'asc' },
         }),
         'pending_replay',
+        true,
       ),
     );
   }
@@ -92,6 +169,7 @@ export class PrismaBatchStore implements BatchStore {
           take: limit,
         }),
         'journal',
+        true,
       ),
     );
   }
@@ -157,11 +235,11 @@ export class PrismaBatchStore implements BatchStore {
     });
   }
 
-  commit(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined> {
+  commit(seq: number, owner: CommitmentOwner): Promise<CommitmentMeta | undefined> {
     return this.settle(seq, owner, 'committed');
   }
 
-  cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined> {
+  cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentMeta | undefined> {
     return this.settle(seq, owner, 'cancelled');
   }
 
@@ -170,14 +248,16 @@ export class PrismaBatchStore implements BatchStore {
     seq: number,
     owner: CommitmentOwner,
     to: 'committed' | 'cancelled',
-  ): Promise<CommitmentRow | undefined> {
+  ): Promise<CommitmentMeta | undefined> {
     return this.prisma.$transaction(async (tx) => {
-      const row = await tx.batchCommitment.findUnique({ where: { seq } });
-      // Ownership is checked on the plaintext columns BEFORE decrypting: a
-      // foreign or forged receipt never counts as a package read.
+      // Plaintext columns only: settling an entry is not a package read.
+      const row = await tx.batchCommitment.findUnique({
+        where: { seq },
+        omit: { packageJson: true },
+      });
       if (row === null || !ownedBy(row, owner)) return undefined;
-      const c = await this.one(tx, row, to === 'committed' ? 'commit' : 'cancel');
-      if (c === undefined || c.state !== 'pending') return c;
+      const c = toMeta(row);
+      if (c.state !== 'pending') return c;
       const ts = this.now();
       if (to === 'committed') {
         await tx.batchCommitment.update({
@@ -220,6 +300,10 @@ function toChannel(r: BatchChannel): ChannelRow {
 }
 
 function toCommitment(r: BatchCommitment, packageJson: string): CommitmentRow {
+  return { ...toMeta(r), packageJson };
+}
+
+function toMeta(r: Omit<BatchCommitment, 'packageJson'>): CommitmentMeta {
   return {
     seq: r.seq,
     channelKey: r.channelKey,
@@ -231,7 +315,6 @@ function toCommitment(r: BatchCommitment, packageJson: string): CommitmentRow {
     paymentAmount: BigInt(r.paymentAmount),
     binding: r.binding,
     packageHash: r.packageHash,
-    packageJson,
     state: r.state as CommitmentState,
   };
 }

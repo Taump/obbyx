@@ -2,7 +2,7 @@ import { canonical, computeBinding, newQuoteId, sha256Hex } from '@obbyx/x402-ob
 
 /**
  * Offers ("quotes") and their binding to ONE request — shared by ObytePaywall
- * and ObyteExactServer so both compute byte-identical bindings.
+ * and ExactObyteServer so both compute byte-identical bindings.
  *
  * binding = HMAC(secret, {sellerId, scheme, quoteId, validUntil, method, url,
  *           bodyHash, network, asset, amount, payTo})

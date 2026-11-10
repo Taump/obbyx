@@ -20,7 +20,7 @@ Commands:
   obbyx doctor          Check wallet, hub, balance, pending payments
   obbyx logs <files..>  Follow one payment through JSON log files
   obbyx decode <value>  Decode an x402 header (PAYMENT-REQUIRED / -SIGNATURE / -RESPONSE)
-  obbyx channel         Payment channels: open, list, status, deposit, close, confirm
+  obbyx channel         Payment channels: open, list, status, deposit, close, confirm, recover
 
 Options:
       --network  Obyte network
@@ -178,15 +178,22 @@ Options:
 ```text
 obbyx channel
 
-Payment channels: open, list, status, deposit, close, confirm
+Payment channels: open, list, status, deposit, close, confirm, recover
 
 Commands:
   obbyx channel open <target>     Open a payment channel to a seller (instant micropayments)
   obbyx channel list              List your channels
   obbyx channel status <target>   Show a channel (balances, spent, period)
   obbyx channel deposit <target>  Top up a channel
-  obbyx channel close <target>    Start closing a channel (the dispute window begins)
-  obbyx channel confirm <target>  Finish closing after the dispute window and get the rest back
+  obbyx channel close <target>    Start closing a channel (the dispute window begins). Declares the
+                                  highest amount you ever signed in the current on-chain period (a
+                                  pending voucher included) and stops paying from it. If the seller
+                                  already started a close, it tells you to confirm instead.
+  obbyx channel confirm <target>  Finish closing and get the rest back: at once when the seller
+                                  started the close, after the dispute window when you did
+  obbyx channel recover           Find channels you opened that are missing from the local database
+                                  (e.g. after a crash) and record them. What was signed on them is
+                                  unknown, so closing one needs --declare or --force
 
 Options:
       --network  Obyte network
@@ -268,7 +275,36 @@ Options:
 ```text
 obbyx channel close <target>
 
-Start closing a channel (the dispute window begins)
+Start closing a channel (the dispute window begins). Declares the highest amount you ever signed in
+the current on-chain period (a pending voucher included) and stops paying from it. If the seller
+already started a close, it tells you to confirm instead.
+
+Positionals:
+  target  Channel AA address                                                     [string] [required]
+
+Options:
+      --network  Obyte network
+     [string] [choices: "testnet", "livenet", "obyte:testnet", "obyte:livenet"] [default: "testnet"]
+      --hub      Obyte hub WebSocket URL                                                    [string]
+      --declare  Declare this amount spent, GBYTE (never below what you are known to have signed).
+                 Required, or --force, for a channel recorded by obbyx 0.1.5 or earlier (it may have
+                 lost track of vouchers it signed) or found by `channel recover`: declaring less
+                 than any voucher lets the seller take the whole deposit. On a repeated close it can
+                 only raise an earlier declaration that was sent                            [string]
+      --force    For such a channel: declare the highest KNOWN amount anyway (only if you are sure
+                 no larger voucher was signed)                                             [boolean]
+      --resend   Send again a close that was sent earlier but never appeared on-chain (not needed
+                 when the hub rejected it or it was never sent)                            [boolean]
+  -h, --help     Show help                                                                 [boolean]
+```
+
+## `obbyx channel confirm`
+
+```text
+obbyx channel confirm <target>
+
+Finish closing and get the rest back: at once when the seller started the close, after the dispute
+window when you did
 
 Positionals:
   target  Channel AA address                                                     [string] [required]
@@ -280,15 +316,13 @@ Options:
   -h, --help     Show help                                                                 [boolean]
 ```
 
-## `obbyx channel confirm`
+## `obbyx channel recover`
 
 ```text
-obbyx channel confirm <target>
+obbyx channel recover
 
-Finish closing after the dispute window and get the rest back
-
-Positionals:
-  target  Channel AA address                                                     [string] [required]
+Find channels you opened that are missing from the local database (e.g. after a crash) and record
+them. What was signed on them is unknown, so closing one needs --declare or --force
 
 Options:
       --network  Obyte network

@@ -1,0 +1,44 @@
+--- channels_base_aa_1.1.oscript	2026-11-10 19:24:46
++++ channels_base_aa_1.2.oscript	2026-11-10 20:07:19
+@@ -1,5 +1,9 @@
+-// Payment channel base AA (v1.1) between two parties A and B.
++// Payment channel base AA (v1.2) between two parties A and B.
+ //
++// v1.2: a fraud proof pays the whole balance to the wronged party (the one that did
++// not initiate the close), not to trigger.address. In v1.1 any holder of the
++// initiator's voucher, including the initiator itself, could take the balance.
++//
+ // params:
+ //   addressA, addressB - the two parties
+ //   asset              - 'base' or an asset id
+@@ -229,18 +233,19 @@
+ 				if: `{ trigger.data.fraud_proof AND var['close_initiated_by'] AND trigger.data.sentByPeer }`,
+ 				init: `{
+ 					$bInitiatedByA = (var['close_initiated_by'] == 'A');
++					$wronged_party = $bInitiatedByA ? $addressB : $addressA; // v1.2: was trigger.address
+ 					$transferredFromPeer = $get_spent_by_peer($bInitiatedByA ? $addressA : $addressB);
+ 					$transferredFromPeerAsClaimedByPeer = var['spentBy' || ($bInitiatedByA ? 'A' : 'B')];
+ 					require($transferredFromPeer > $transferredFromPeerAsClaimedByPeer, "the peer didn't lie in his favor");
+ 				}`,
+ 				messages: [
+-					// send all
++					// send all to the wronged party, whoever submits the proof (v1.2)
+ 					{
+ 						app: 'payment',
+ 						payload: {
+ 							asset: 'base',
+ 							outputs: [
+-								{address: `{trigger.address}`}
++								{address: `{$wronged_party}`}
+ 							]
+ 						}
+ 					},
+@@ -250,7 +255,7 @@
+ 						payload: {
+ 							asset: `{$asset}`,
+ 							outputs: [
+-								{address: `{trigger.address}`}
++								{address: `{$wronged_party}`}
+ 							]
+ 						}
+ 					},

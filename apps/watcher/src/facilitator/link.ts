@@ -3,22 +3,28 @@ import {
   type ChannelParams,
   type ObyteNetwork,
   parseChannelDefinition,
-  verifySignedPackage,
+  verifyVoucherPackage,
 } from '@obbyx/obyte';
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
 import {
   type CommitmentMessage,
   type ReceiptKind,
+  KeyedQueue,
   WATCHER_PROTOCOL_VERSION,
   canonical,
   hubCall,
   loginMessage,
   packageHashOf,
+  parseStateVars,
   receiptMessage,
   serverMessageSchema,
   voucherMessageSchema,
 } from '@obbyx/x402-obyte';
 import type { KnownChannel, WatcherStore } from '../storage/store.js';
+import { channelState } from '../chain/decide.js';
+import { MIN_CHANNEL_TIMEOUT_SECONDS } from '../config.js';
+/** Local retries of a voucher that could not be judged (hub problem), while connected. */
+export const DEFAULT_RETRY = { baseMs: 2_000, maxMs: 60_000, attempts: 8, pending: 1_000 };
 
 /**
  * Link from the seller's watcher to the facilitator (`/watcher` WebSocket).
@@ -28,7 +34,9 @@ import type { KnownChannel, WatcherStore } from '../storage/store.js';
  * sends a SIGNED ack for its exact package. An invalid voucher is never acked,
  * so it is never reported as paid; a definitely refused one gets a signed
  * nack (the facilitator cancels it and frees the channel). A transient
- * problem (hub unreachable) gets no answer: the voucher is replayed later.
+ * problem (hub unreachable) gets no answer: the voucher is retried locally
+ * with a bounded backoff while connected, and replayed by the facilitator
+ * after a reconnection.
  */
 export interface FacilitatorLinkOptions {
   readonly url: string;
@@ -42,8 +50,17 @@ export interface FacilitatorLinkOptions {
   readonly hubTimeoutMs?: number;
   /** Current bytes balance of the seller (for the facilitator's health check). */
   readonly bytesBalance: () => Promise<bigint>;
-  /** Called for a channel seen for the first time (to start watching it on the hub). */
+  /** Called for a channel first seen with a VALID voucher (to start watching it on the hub). */
   readonly onNewChannel?: (aa: string) => void;
+  /**
+   * Called after a voucher was stored while the client is closing the channel
+   * (it may enable a fraud proof: defend the channel now).
+   */
+  readonly onClosingVoucher?: (aa: string) => void;
+  /** Vouchers of channels with a shorter dispute window are refused (default {@link MIN_CHANNEL_TIMEOUT_SECONDS}). */
+  readonly minChannelTimeout?: number;
+  /** Local retry of transient validation failures (see {@link DEFAULT_RETRY}). */
+  readonly retry?: Partial<typeof DEFAULT_RETRY>;
 }
 
 export class FacilitatorLink {
@@ -52,11 +69,22 @@ export class FacilitatorLink {
   private heartbeat: NodeJS.Timeout | undefined;
   private backoffMs = 1_000;
   private readonly definitions = new Map<string, ChannelParams>();
+  private readonly watched = new Set<string>();
+  /** Pending local retries of transient commitments, by seq. */
+  private readonly retries = new Map<number, NodeJS.Timeout>();
+  private readonly retry: typeof DEFAULT_RETRY;
+  /**
+   * One package is judged at a time: a fired retry timer and a fresh delivery
+   * of the same package would otherwise both pass `hasVoucher`, and the
+   * second could nack (e.g. its period closed meanwhile) what the first acked.
+   */
+  private readonly judging = new KeyedQueue();
   private readonly log: Logger;
   connected = false;
 
   constructor(private readonly options: FacilitatorLinkOptions) {
     this.log = moduleLogger(options.logger, 'watcher.link', { seller: options.seller });
+    this.retry = { ...DEFAULT_RETRY, ...options.retry };
   }
 
   start(): void {
@@ -67,6 +95,7 @@ export class FacilitatorLink {
   stop(): void {
     this.stopped = true;
     clearInterval(this.heartbeat);
+    this.clearRetries();
     this.ws?.close(1000, 'watcher stopping');
   }
 
@@ -77,6 +106,7 @@ export class FacilitatorLink {
     ws.addEventListener('close', (e) => {
       this.connected = false;
       clearInterval(this.heartbeat);
+      this.clearRetries(); // the facilitator replays them after the reconnection
       if (this.stopped) return;
       this.log.warn(
         { code: e.code, reason: e.reason, retryMs: this.backoffMs },
@@ -137,6 +167,7 @@ export class FacilitatorLink {
         this.connected = true;
         this.backoffMs = 1_000;
         this.log.info({ network: msg.network }, 'connected to facilitator');
+        clearInterval(this.heartbeat); // a repeated welcome must not leak a timer
         this.heartbeat = setInterval(
           () =>
             void this.sendHeartbeat(ws).catch((err: unknown) =>
@@ -150,19 +181,79 @@ export class FacilitatorLink {
         this.log.error({ message: msg.message }, 'facilitator rejected the watcher');
         return;
       case 'commitment':
-        return this.onCommitment(ws, msg);
+        this.cancelRetry(msg.seq); // a fresh delivery supersedes a local retry
+        return this.onCommitment(ws, msg, 0);
     }
   }
 
-  private async onCommitment(ws: WebSocket, msg: CommitmentMessage): Promise<void> {
+  private clearRetries(): void {
+    for (const timer of this.retries.values()) clearTimeout(timer);
+    this.retries.clear();
+  }
+
+  private cancelRetry(seq: number): void {
+    clearTimeout(this.retries.get(seq));
+    this.retries.delete(seq);
+  }
+
+  /**
+   * Retries a commitment that could not be judged, with exponential backoff,
+   * on the same connection only and a bounded number of times (then the
+   * facilitator's replay after a reconnection takes over).
+   */
+  private scheduleRetry(ws: WebSocket, msg: CommitmentMessage, attempt: number, log: Logger): void {
+    if (this.stopped) return;
+    if (attempt >= this.retry.attempts) {
+      log.warn({ attempts: attempt }, 'giving up local retries; the voucher waits for a replay');
+      return;
+    }
+    if (!this.retries.has(msg.seq) && this.retries.size >= this.retry.pending) {
+      log.warn('too many vouchers awaiting a retry; this one waits for a replay');
+      return;
+    }
+    this.cancelRetry(msg.seq);
+    const delay = Math.min(this.retry.baseMs * 2 ** attempt, this.retry.maxMs);
+    const timer = setTimeout(() => {
+      this.retries.delete(msg.seq);
+      if (this.stopped || this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+      this.onCommitment(ws, msg, attempt + 1).catch((err: unknown) =>
+        log.error({ err }, 'retrying a voucher failed'),
+      );
+    }, delay);
+    timer.unref();
+    this.retries.set(msg.seq, timer);
+  }
+
+  private onCommitment(ws: WebSocket, msg: CommitmentMessage, attempt: number): Promise<void> {
     const packageHash = packageHashOf(msg.signedPackage);
+    return this.judging.run(packageHash, () => this.judge(ws, msg, attempt, packageHash));
+  }
+
+  private async judge(
+    ws: WebSocket,
+    msg: CommitmentMessage,
+    attempt: number,
+    packageHash: string,
+  ): Promise<void> {
     const log = this.log.child({ seq: msg.seq, aa: msg.aa, proofId: packageHash });
     const reply = (kind: ReceiptKind, reason?: string) =>
       this.sendReceipt(ws, kind, msg.seq, packageHash, reason);
+    // A package we already stored (re-delivery, possibly after its period
+    // closed or our confirm) was validated then: acking it again is true, and
+    // a nack would contradict the ack the facilitator already holds.
+    if (await this.options.store.hasVoucher(msg.aa, msg.period, canonical(msg.signedPackage))) {
+      reply('ack');
+      log.info({ amountSpent: msg.amountSpent }, 'voucher already stored; acked again');
+      return;
+    }
     const verdict = await this.validate(msg);
     switch (verdict.kind) {
       case 'transient':
-        log.warn({ problem: verdict.reason }, 'cannot validate the voucher now — no answer yet');
+        log.warn(
+          { problem: verdict.reason, attempt },
+          'cannot validate the voucher now — no answer yet, retrying',
+        );
+        this.scheduleRetry(ws, msg, attempt, log);
         return;
       case 'anomaly':
         // Answering would let whoever altered the unsigned envelope cancel a
@@ -186,6 +277,7 @@ export class FacilitatorLink {
       binding: msg.binding,
       packageJson: canonical(msg.signedPackage),
       channel: verdict.channel,
+      clientClosing: verdict.clientClosing,
     });
     if (saved.kind === 'seq_conflict') {
       // Neither ack nor nack: our stored voucher under this seq is real; the
@@ -206,8 +298,24 @@ export class FacilitatorLink {
       reply('nack', 'not_increasing');
       return;
     }
+    if (saved.kind === 'settling') {
+      // We already committed to a confirm / sent our close for this period:
+      // the voucher can never reach the chain, so it is never reported paid.
+      log.warn(
+        { action: saved.action, status: saved.status },
+        'voucher arrived after the period started settling — NOT stored, nacked',
+      );
+      reply('nack', 'channel_settling');
+      return;
+    }
+    // Only a voucher that was stored starts the watch of its AA.
+    if (!this.watched.has(msg.aa)) {
+      this.watched.add(msg.aa);
+      this.options.onNewChannel?.(msg.aa);
+    }
     reply('ack'); // only after the durable write (and again for a re-delivery)
     log.info({ amountSpent: msg.amountSpent }, 'voucher stored and acked');
+    if (verdict.clientClosing) this.options.onClosingVoucher?.(msg.aa);
   }
 
   /**
@@ -219,7 +327,10 @@ export class FacilitatorLink {
   private async validate(msg: CommitmentMessage): Promise<Verdict> {
     if (msg.network !== this.options.network.caip2)
       return { kind: 'anomaly', reason: 'wrong network' };
-    const verified = verifySignedPackage<unknown>(msg.signedPackage, {
+    // The AA profile: a package with e.g. `timestamp`, `last_ball_unit` or an
+    // old version is validly signed but `is_valid_signed_package` rejects it,
+    // so it could never be used in a close or a fraud proof.
+    const verified = verifyVoucherPackage<unknown>(msg.signedPackage, {
       network: this.options.network,
     });
     if (!verified.ok) return { kind: 'refuse', reason: `bad signature: ${verified.message}` };
@@ -234,13 +345,10 @@ export class FacilitatorLink {
     ) {
       return { kind: 'anomaly', reason: 'voucher fields do not match the message' };
     }
+    const t = this.options.hubTimeoutMs ?? 15_000;
     let params = this.definitions.get(msg.aa);
     if (params === undefined) {
-      this.options.onNewChannel?.(msg.aa);
-      const def = await hubCall(
-        () => this.options.client.api.getDefinition(msg.aa),
-        this.options.hubTimeoutMs ?? 15_000,
-      );
+      const def = await hubCall(() => this.options.client.api.getDefinition(msg.aa), t);
       if (def.kind !== 'ok')
         return { kind: 'transient', reason: `cannot read channel definition: ${def.error}` };
       // Our hub may not know a fresh AA yet: not a refusal.
@@ -258,8 +366,41 @@ export class FacilitatorLink {
     if (params.addressB !== verified.value.signer) {
       return { kind: 'refuse', reason: 'voucher not signed by the channel client' };
     }
+    const minTimeout = this.options.minChannelTimeout ?? MIN_CHANNEL_TIMEOUT_SECONDS;
+    if (params.timeout < minTimeout) {
+      return { kind: 'refuse', reason: 'channel_timeout_too_short' };
+    }
+    // The period must be the one open on-chain: a voucher of a closed period
+    // can never be cashed (the AA requires the current period).
+    //
+    // Accepted residual risk: this read happens OUTSIDE the transaction that
+    // saves the voucher and trusts one hub. A client confirm or fraud proof
+    // landing between this read and the save (closing the period) makes the
+    // acked voucher uncollectable. Our own confirm / sent close cannot slip
+    // through: those rows are checked inside the save transaction.
+    const vars = await hubCall(
+      () => this.options.client.api.getAaStateVars({ address: msg.aa }),
+      t,
+    );
+    if (vars.kind !== 'ok')
+      return { kind: 'transient', reason: `cannot read channel state: ${vars.error}` };
+    const raw = parseStateVars(vars.value);
+    const state = raw === undefined ? undefined : channelState(raw);
+    if (state === undefined) return { kind: 'transient', reason: 'malformed channel state' };
+    // Our hub may not have seen the deposit / the last close yet.
+    if (state.period === undefined)
+      return { kind: 'transient', reason: 'channel not opened yet on our hub' };
+    if (msg.period < state.period) return { kind: 'refuse', reason: 'period_closed' };
+    if (msg.period > state.period)
+      return { kind: 'transient', reason: 'voucher period ahead of our hub' };
+    // Our close is on-chain: spentByB is fixed, a new voucher can never be
+    // collected — whatever our local rows say (e.g. a crash before recording).
+    if (state.closeInitiatedBy === 'A') return { kind: 'refuse', reason: 'channel_settling' };
     return {
       kind: 'ok',
+      // A client close of THIS period: our own close (if recorded) lost the
+      // race, so it does not block a voucher that enables a fraud proof.
+      clientClosing: state.closeInitiatedBy === 'B',
       channel: {
         aa: msg.aa,
         network: msg.network,
@@ -313,5 +454,5 @@ export class FacilitatorLink {
 
 /** Outcome of validating a commitment before it is stored. */
 type Verdict =
-  | { readonly kind: 'ok'; readonly channel: KnownChannel }
+  | { readonly kind: 'ok'; readonly channel: KnownChannel; readonly clientClosing: boolean }
   | { readonly kind: 'refuse' | 'transient' | 'anomaly'; readonly reason: string };

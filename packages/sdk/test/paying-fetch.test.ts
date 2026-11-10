@@ -4,13 +4,18 @@ import {
   decodePaymentSignatureHeader,
   encodePaymentRequiredHeader,
   encodePaymentResponseHeader,
+  encodePaymentSignatureHeader,
 } from '@x402/core/http';
 import type { PaymentRequirements } from '@x402/core/types';
 import { ObbyxError } from '@obbyx/obyte';
 import type { BatchObyteClient, ExactObyteClient } from '@obbyx/x402-obyte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SpendingBudget } from '../src/client/budget.js';
-import { payingFetch } from '../src/client/paying-fetch.js';
+import {
+  PaymentOutcomeUnknownError,
+  payingFetch,
+  paymentOutcomeUnknown,
+} from '../src/client/paying-fetch.js';
 import { silentLogger } from '../../obyte/test/helpers.js';
 
 const NET = 'obyte:testnet';
@@ -107,5 +112,81 @@ describe('payingFetch offer fallback', () => {
         },
       ),
     ).rejects.toThrow(/channel cannot pay/);
+  });
+});
+
+describe('unknown payment outcomes are reported with the payment to retry', () => {
+  const remembered: string[] = [];
+  const paying = {
+    hasChannel: () => true,
+    onSettled: () => undefined,
+    rememberPaymentHeader: (_req: PaymentRequirements, header: string) => remembered.push(header),
+    createPaymentPayload: async () => ({
+      x402Version: 2,
+      payload: { signedPackage: { signed_message: {} } },
+    }),
+  } as unknown as BatchObyteClient;
+
+  it('a network error after the payment was sent throws PaymentOutcomeUnknownError with the header', async () => {
+    let calls = 0;
+    const flaky: typeof fetch = async (input, init) => {
+      calls += 1;
+      if (calls === 2) throw new TypeError('fetch failed');
+      return fetch(input, init);
+    };
+    const err = await payingFetch(
+      `${base}/x`,
+      {},
+      {
+        mechanisms: { batch: paying },
+        network: NET,
+        maxAmount: new Map([['base', 1000n]]),
+        logger: silent,
+        fetch: flaky,
+      },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PaymentOutcomeUnknownError);
+    const header = (err as PaymentOutcomeUnknownError).paymentHeader;
+    expect(decodePaymentSignatureHeader(header).accepted.scheme).toBe('batch-settlement');
+    // the channel client keeps it with the pending voucher
+    expect(remembered.at(-1)).toBe(header);
+  });
+
+  it('paymentOutcomeUnknown: 5xx, 409, pending, no PAYMENT-RESPONSE are unknown; success and refusals are not', () => {
+    const header = encodePaymentSignatureHeader({
+      x402Version: 2,
+      accepted: offer('exact'),
+      payload: {},
+    } as never);
+    const batchHeader = encodePaymentSignatureHeader({
+      x402Version: 2,
+      accepted: offer('batch-settlement'),
+      payload: {},
+    } as never);
+    const r = (status: number, payment?: Record<string, unknown>, h = header) => ({
+      response: new Response(null, { status }),
+      ...(payment ? { payment: payment as never } : {}),
+      paymentHeader: h,
+    });
+    const refused = {
+      success: false,
+      errorReason: 'invalid_payload',
+      transaction: '',
+      network: NET,
+    };
+    expect(paymentOutcomeUnknown(r(500))).toBe(true);
+    expect(paymentOutcomeUnknown(r(502, refused))).toBe(true);
+    expect(paymentOutcomeUnknown(r(409))).toBe(true);
+    expect(paymentOutcomeUnknown(r(402))).toBe(true);
+    expect(paymentOutcomeUnknown(r(402, { ...refused, errorReason: 'settlement_pending' }))).toBe(
+      true,
+    );
+    expect(paymentOutcomeUnknown(r(200, undefined, batchHeader))).toBe(true);
+    expect(paymentOutcomeUnknown(r(200))).toBe(false);
+    expect(paymentOutcomeUnknown(r(402, refused))).toBe(false);
+    expect(paymentOutcomeUnknown(r(200, { success: true, transaction: 'T', network: NET }))).toBe(
+      false,
+    );
+    expect(paymentOutcomeUnknown({ response: new Response(null, { status: 500 }) })).toBe(false);
   });
 });

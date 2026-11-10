@@ -8,11 +8,10 @@ import { StoreLockedError, startHeartbeat } from '@obbyx/x402-obyte';
 import { SchemaNotMigratedError, openDatabase } from './storage/database.js';
 import { PrismaBatchStore } from './storage/batch-store.js';
 import { PrismaCatalog } from './discovery/catalog.js';
-import { PackageCipher } from './storage/package-cipher.js';
-import { ObbyxError } from '@obbyx/obyte';
+import { CHANNEL_BASE_AA_NETWORKS, ObbyxError } from '@obbyx/obyte';
 import { PrismaSettlementStore } from './storage/settlement-store.js';
 import { WsWatcherGateway } from './watcher/gateway.js';
-import { loadFacilitatorConfig } from './config.js';
+import { loadFacilitatorConfig, packageKeyNextToDb } from './config.js';
 import { RecoveryWorker } from './workers/recovery.js';
 import { buildFacilitator } from './http/server.js';
 
@@ -31,6 +30,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (packageKeyNextToDb(config)) {
+    log.warn(
+      { packageKeyFile: config.packageKeyFile, dbPath: config.dbPath },
+      'PACKAGE_KEY_FILE is inside the database directory: a copy of it holds both the encrypted packages and their key; move the key (docs/guide/security.md)',
+    );
+  }
   if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive: true });
   let store: PrismaSettlementStore;
   let batchStore: PrismaBatchStore;
@@ -38,7 +43,7 @@ async function main(): Promise<void> {
   try {
     const prisma = await openDatabase(config.dbPath);
     store = new PrismaSettlementStore(prisma);
-    batchStore = new PrismaBatchStore(prisma, PackageCipher.fromFile(config.packageKeyFile));
+    batchStore = await PrismaBatchStore.open(prisma, config.packageKeyFile, logger);
     catalog = new PrismaCatalog(prisma);
   } catch (err) {
     const known =
@@ -68,7 +73,10 @@ async function main(): Promise<void> {
   const gateway = new WsWatcherGateway({
     store: batchStore,
     logger,
-    networks: config.networks.map((n) => n.network.caip2),
+    // Watchers only where channels exist (see buildMechanisms).
+    networks: config.networks
+      .map((n) => n.network.caip2)
+      .filter((n) => CHANNEL_BASE_AA_NETWORKS.has(n)),
     minBytes: config.batch.minWatcherBytes,
     heartbeatTimeoutMs: config.batch.heartbeatTimeoutMs,
     events: (e) => store.event(e),

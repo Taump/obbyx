@@ -37,6 +37,14 @@ export const BATCH_REASONS = {
   quoteExpired: 'invalid_batch_settlement_obyte_quote_expired',
 } as const;
 
+/**
+ * Largest amount a voucher may carry (`amount_spent`, `payment_amount`, the
+ * price). Oscript numbers keep 15 significant digits: above 1e15 the AA's
+ * arithmetic on the voucher (balance checks, payouts) is no longer exact, so
+ * such a voucher could not be relied on in a close or a fraud proof.
+ */
+export const MAX_VOUCHER_AMOUNT = 1e15;
+
 export const batchExtraSchema = z
   .object({
     binding: z.string().regex(SHA256_HEX_RE),
@@ -63,9 +71,9 @@ export const voucherMessageSchema = z
   .object({
     aa_address: z.string(),
     period: z.number().int().positive(),
-    // Safe integers only: a larger JSON number cannot be read back exactly.
-    amount_spent: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    payment_amount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    // Capped at 1e15: Oscript keeps 15 significant digits (MAX_VOUCHER_AMOUNT).
+    amount_spent: z.number().int().positive().max(MAX_VOUCHER_AMOUNT),
+    payment_amount: z.number().int().positive().max(MAX_VOUCHER_AMOUNT),
     binding: z.string().regex(SHA256_HEX_RE),
   })
   .strict();
@@ -83,7 +91,10 @@ export interface ParsedBatchRequirements {
 export function parseBatchRequirements(req: PaymentRequirements): Verdict<ParsedBatchRequirements> {
   if (req.scheme !== BATCH_SCHEME)
     return reject('unsupported_scheme', 'Scheme is not batch-settlement');
-  if (!isObyteNetwork(req.network)) return reject('invalid_network', 'Not an Obyte network');
+  // x402 v2 only: the CAIP-2 id, never a v1 alias (stored entries are keyed by it).
+  if (!isObyteNetwork(req.network) || getNetwork(req.network).caip2 !== req.network) {
+    return reject('invalid_network', 'Not an Obyte CAIP-2 network');
+  }
   if (!isAssetId(req.asset) || !isAddress(req.payTo)) {
     return reject('invalid_payment_requirements', 'Invalid asset or payTo');
   }
@@ -94,6 +105,9 @@ export function parseBatchRequirements(req: PaymentRequirements): Verdict<Parsed
     return reject('invalid_payment_requirements', 'Invalid amount');
   }
   if (amount <= 0n) return reject('invalid_payment_requirements', 'Amount must be positive');
+  if (amount > BigInt(MAX_VOUCHER_AMOUNT)) {
+    return reject('invalid_payment_requirements', `Amount must not exceed ${MAX_VOUCHER_AMOUNT}`);
+  }
   const extra = batchExtraSchema.safeParse(req.extra);
   if (!extra.success) {
     return reject(

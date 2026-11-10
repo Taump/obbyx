@@ -34,8 +34,8 @@ import { type Quote, bodyHashOf, newQuote, offerBinding } from './quote.js';
 /**
  * Obyte schemes for the OFFICIAL x402 resource server (`@x402/core/server`,
  * `@x402/express`, `@x402/hono`, …): SchemeNetworkServer implementations for
- * `exact` ({@link ObyteExactServer}) and `batch-settlement`
- * ({@link ObyteBatchServer}), sharing {@link ObyteSchemeServer}.
+ * `exact` ({@link ExactObyteServer}) and `batch-settlement`
+ * ({@link BatchObyteServer}), sharing {@link ObyteSchemeServer}.
  *
  * - Binding (I1/I2): `enrichPaymentRequiredResponse` adds a per-request HMAC
  *   binding + quote to every offer. On a paid request it recomputes the HMAC
@@ -84,10 +84,10 @@ function requestOf(transportContext: unknown): RequestLike | undefined {
 }
 
 /** @deprecated Use {@link ObyteSchemeServerOptions}. */
-export type ObyteExactServerOptions = ObyteSchemeServerOptions;
+export type ExactObyteServerOptions = ObyteSchemeServerOptions;
 
-/** Options of {@link ObyteBatchServer}. */
-export interface ObyteBatchServerOptions extends ObyteSchemeServerOptions {
+/** Options of {@link BatchObyteServer}. */
+export interface BatchObyteServerOptions extends ObyteSchemeServerOptions {
   /** Minimum channel dispute window the seller accepts (seconds); must match the facilitator's. */
   readonly minChannelTimeoutSeconds: number;
 }
@@ -286,7 +286,7 @@ export abstract class ObyteSchemeServer implements SchemeNetworkServer {
 }
 
 /** `exact`: the proof is the unit (key `<network>:unit:<hash>`, as ObytePaywall). */
-export class ObyteExactServer extends ObyteSchemeServer {
+export class ExactObyteServer extends ObyteSchemeServer {
   constructor(options: ObyteSchemeServerOptions) {
     super(options, {
       scheme: EXACT_SCHEME,
@@ -306,8 +306,8 @@ export class ObyteExactServer extends ObyteSchemeServer {
  * ObytePaywall). Offers carry the channel base AA and the minimum dispute
  * window. Needs a facilitator with batch-settlement and the seller's watcher.
  */
-export class ObyteBatchServer extends ObyteSchemeServer {
-  constructor(options: ObyteBatchServerOptions) {
+export class BatchObyteServer extends ObyteSchemeServer {
+  constructor(options: BatchObyteServerOptions) {
     super(options, {
       scheme: BATCH_SCHEME,
       staticExtra: { baseAa: CHANNEL_BASE_AA, minTimeout: options.minChannelTimeoutSeconds },

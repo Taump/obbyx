@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
 import { decidePaymentId } from '../src/seller/payment-identifier.js';
-import { ObyteExactServer } from '../src/seller/x402-server.js';
+import { ExactObyteServer } from '../src/seller/x402-server.js';
 import { silentLogger } from '../../obyte/test/helpers.js';
 
 const silent = silentLogger();
@@ -66,11 +66,11 @@ describe('payment-identifier decisions', () => {
   });
 });
 
-describe('ObyteExactServer crash recovery', () => {
+describe('ExactObyteServer crash recovery', () => {
   it('a payment left in serving by a crashed process is taken over after the lease', async () => {
     let now = 1000;
     const proofs = new ConsumedProofsStore(':memory:', () => now);
-    const server = new ObyteExactServer({
+    const server = new ExactObyteServer({
       sellerId: 's',
       secret: 'x'.repeat(32),
       proofs,

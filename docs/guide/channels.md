@@ -1,10 +1,17 @@
 # Payment channels (batch-settlement)
 
 Channels make paid calls instant and fee-free per call: the buyer deposits once
-into an Obyte AA (the deployed base AA `4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ` of
-aa-channels-lib) and then pays each request with a signed **voucher** for the
+into an Obyte AA (an instance of our channel base AA **v1.2**
+`7UXLI64FC7TMDFGIZZ34GIJHZIGTZUZR`, a fork of aa-channels-lib with the
+fraud-proof payout going to the wronged party; channels on the older v1.1 base
+AA `4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ` are not paid into, only closed) and then
+pays each request with a signed **voucher** for the
 cumulative amount. Nothing is sent on-chain per call; the seller's **watcher**
 closes the channel later and receives the money.
+
+Channel payments currently work on **testnet only**: v1.2 is deployed on
+testnet, not yet on mainnet. The facilitator serves `batch-settlement` only on
+`obyte:testnet`, whatever `NETWORKS` lists.
 
 See [ADR-0003](/adr/0003-batch-settlement-binding-and-watcher) for the design
 and [ADR-0001](/adr/0001-trust-model) for the trust model.

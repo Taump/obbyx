@@ -68,8 +68,34 @@ describe('watcher decisions', () => {
     expect(run({ ...open, period: undefined }, best(10n))).toMatchObject({ action: 'none' });
   });
 
-  it('alerts on a voucher above the confirmed deposit instead of closing', () => {
-    expect(run({ ...open, balanceB: 100n }, best(500n))).toMatchObject({ action: 'alert' });
+  it('alerts on a voucher above the confirmed deposit but still cashes out (the AA clamps)', () => {
+    // over the close threshold: close anyway, with the alert attached
+    expect(run({ ...open, balanceB: 100n }, best(1_500n))).toMatchObject({
+      action: 'close',
+      period: 3,
+      alert: expect.stringContaining('exceeds balanceB'),
+    });
+    // by age as well
+    expect(run({ ...open, balanceB: 100n }, best(500n, 3, 1000), 4600)).toMatchObject({
+      action: 'close',
+      alert: expect.any(String),
+    });
+    // within policy: no action, but the alert is still reported
+    expect(run({ ...open, balanceB: 100n }, best(500n))).toMatchObject({
+      action: 'none',
+      alert: expect.any(String),
+    });
+    // a normal voucher carries no alert
+    expect(run(open, best(1_000n))).not.toHaveProperty('alert');
+  });
+
+  it('a client close with a voucher above the declared amount yields a fraud proof (even above balanceB)', () => {
+    expect(
+      run(
+        { ...open, balanceB: 100n, closeInitiatedBy: 'B', closeStartTs: 1000, spentByB: 50n },
+        best(500n),
+      ),
+    ).toMatchObject({ action: 'fraud_proof', period: 3 });
   });
 
   it('parses AA state vars', () => {
@@ -89,5 +115,18 @@ describe('watcher decisions', () => {
       balanceB: 9n,
     });
     expect(channelState({})).toMatchObject({ period: undefined, balanceB: 0n });
+    // after a close the AA deletes balanceB: absent is a zero balance
+    expect(channelState({ period: 4 })).toMatchObject({ period: 4, balanceB: 0n });
+  });
+
+  it.each([
+    ['a string balanceB', { period: 2, balanceB: '9' }],
+    ['a boolean balanceB', { period: 2, balanceB: true }],
+    ['a fractional balanceB', { period: 2, balanceB: 1.5 }],
+    ['a string period', { period: '2', balanceB: 9 }],
+    ['a null spentByB', { period: 2, balanceB: 9, spentByB: null }],
+    ['an unknown initiator', { period: 2, balanceB: 9, close_initiated_by: 'C' }],
+  ])('treats %s as a malformed state (skip the tick), never as 0', (_n, vars) => {
+    expect(channelState(vars)).toBeUndefined();
   });
 });

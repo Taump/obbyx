@@ -9,15 +9,15 @@ obbyx faucet                   # free testnet bytes
 obbyx pay https://api.example/paid --max 0.00002
 ```
 
-| Command                                               | Does                                                                                              |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `init`, `address`, `balance`                          | local wallet                                                                                      |
-| `faucet`                                              | testnet bytes from the Faucet Bot                                                                 |
-| `pay <url> --max <GBYTE>`                             | call a paid API, paying at most `--max`; never pays twice (`--payment` resumes a pending payment) |
-| `channel open\|list\|status\|deposit\|close\|confirm` | payment channels: instant, fee-free per call                                                      |
-| `doctor`                                              | wallet, hub, balance, pending payments                                                            |
-| `logs <files> --binding B`                            | follow one payment through JSON logs                                                              |
-| `decode <header>`                                     | decode an x402 header                                                                             |
+| Command                                                        | Does                                                                                              |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `init`, `address`, `balance`                                   | local wallet                                                                                      |
+| `faucet`                                                       | testnet bytes from the Faucet Bot                                                                 |
+| `pay <url> --max <GBYTE>`                                      | call a paid API, paying at most `--max`; never pays twice (`--payment` resumes a pending payment) |
+| `channel open\|list\|status\|deposit\|close\|confirm\|recover` | payment channels: instant, fee-free per call                                                      |
+| `doctor`                                                       | wallet, hub, balance, pending payments                                                            |
+| `logs <files> --binding B`                                     | follow one payment through JSON logs                                                              |
+| `decode <header>`                                              | decode an x402 header                                                                             |
 
 `--network testnet|livenet` (default testnet). Every command has `--help`.
 Exit codes: 0 ok, 1 error, 2 refused, 3 pending.

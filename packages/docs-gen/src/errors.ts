@@ -351,7 +351,7 @@ export const ERROR_GROUPS: readonly ErrorGroup[] = [
       f(
         'invalid_channel_params',
         'The channel AA parameters are malformed.',
-        'Use a channel created by obbyx / aa-channels-lib.',
+        'Use a channel created by obbyx (base AA v1.2).',
       ),
       f(
         'invalid_channel_definition',
@@ -361,7 +361,7 @@ export const ERROR_GROUPS: readonly ErrorGroup[] = [
     ],
   },
   {
-    title: 'Seller (ObytePaywall / ObyteExactServer)',
+    title: 'Seller (ObytePaywall / ExactObyteServer)',
     intro:
       'HTTP errors the paid API returns to the client (JSON `{"error": code}` or a 402 with the reason).',
     errors: [
@@ -463,6 +463,41 @@ export const ERROR_GROUPS: readonly ErrorGroup[] = [
         'Fix the listed variables (see the configuration reference).',
       ),
       c('invalid_key', 'Internal: a storage key was built from empty parts.', CLIENT_BUG),
+      c(
+        'channel_closing',
+        'The channel is being closed (on-chain, or by our own close that is not on-chain yet). No voucher is signed until a later period starts.',
+        'Wait for the close to finish (`obbyx channel status`), then deposit again for a new period.',
+      ),
+      c(
+        'max_signed_uncertain',
+        'The highest voucher signed in the period being closed is not known for sure (a channel database migrated from an old version, or a recovered channel). Declaring too little lets the seller take the whole deposit with a fraud proof.',
+        '`obbyx channel close <aa> --declare <the highest amount you may have signed>`, or `--force` to declare only what is known.',
+      ),
+      c(
+        'declare_too_low',
+        'The declared amount is below what is known to be signed, or below a close already sent.',
+        'Declare at least the amount shown in the error.',
+      ),
+      c(
+        'close_superseded',
+        'Another process changed the declaration of this close before it was sent; nothing was sent.',
+        'Run `obbyx channel status`, then close again if needed (the declaration never goes down).',
+      ),
+      c(
+        'legacy_channel',
+        'The channel is on the retired base AA v1.1: it can only be closed.',
+        'Close it (`obbyx channel close`) and open a new channel.',
+      ),
+      c(
+        'no_spending_limit',
+        'The batch client has no `maxAmount` for this asset, so it refuses to sign.',
+        'Set `maxAmount` for the asset in the client options.',
+      ),
+      c(
+        'store_too_new',
+        'The channel database was written by a newer obbyx version.',
+        'Upgrade obbyx; never run an older version on this database.',
+      ),
     ],
   },
 ];

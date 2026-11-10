@@ -23,7 +23,11 @@ export interface PaymentRoutesDeps {
   ) => Promise<void>;
 }
 
-/** x402 REST: POST /verify (read-only), POST /settle (idempotent), GET /supported. */
+/**
+ * x402 REST: POST /verify (moves no funds and stores no new voucher; it may
+ * cancel a stored voucher that is definitely refused), POST /settle
+ * (idempotent), GET /supported.
+ */
 export function registerPaymentRoutes(http: FastifyInstance, deps: PaymentRoutesDeps): void {
   const { core, log } = deps;
 

@@ -9,16 +9,24 @@ import type { ObyteNetwork } from '../core/networks.js';
 import { type Verdict, accept, hasOnlyKeys, isPlainObject, reject } from '../core/result.js';
 
 /**
- * Obyte signed messages ("signed packages") as used by AA payment channels.
+ * Obyte signed messages ("signed packages"). Every package has exactly one
+ * author with an embedded `['sig', {pubkey}]` definition whose chash equals
+ * the author address, a signature under path `r`, and a `version` of the
+ * expected network (testnet versions end in `t`), so a package is never
+ * accepted on the other network (I4). Two profiles:
  *
- * Supported profile (same as aa-channels-lib's light verifier, plus network
- * binding): exactly one author, an embedded `['sig', {pubkey}]` definition
- * whose chash equals the author address, signature under path `r`, and a
- * `version` that belongs to the expected network (testnet versions end in
- * `t`) — so a package can never be accepted on the other network (I4).
+ * - {@link verifySignedPackage}: off-chain messages (login, receipts); also
+ *   allows `last_ball_unit`, `timestamp` and version `1.0`.
+ * - {@link verifyVoucherPackage}: channel vouchers. A strict SUBSET of what
+ *   ocore's `is_valid_signed_package` accepts in the channel AA: only the keys
+ *   `signed_message`, `authors`, `version`, versions `2.0`–`4.0`, one `sig`
+ *   author with an embedded definition, no `last_ball_unit`. Any other key
+ *   fails that check, and a `last_ball_unit` makes it fail for any payer whose
+ *   address is already defined; a voucher the AA rejects can never be used in
+ *   a close or a fraud proof, so it must never be accepted as a payment.
  *
  * Packages are signed with obyte.js directly:
- * `obyte.utils.signMessage(message, { privateKey, testnet })`.
+ * `obyte.utils.signMessage(message, { privateKey, testnet })` (version 4.0).
  */
 export type SigDefinition = readonly ['sig', { readonly pubkey: string }];
 
@@ -45,27 +53,57 @@ export const SIGNED_PACKAGE_VERSIONS = {
   testnet: ['1.0t', '2.0t', '3.0t', '4.0t'],
 } as const;
 
-const PACKAGE_KEYS = new Set([
-  'signed_message',
-  'authors',
-  'last_ball_unit',
-  'timestamp',
-  'version',
-]);
+interface Profile {
+  readonly keys: ReadonlySet<string>;
+  readonly versions: Readonly<Record<ObyteNetwork['name'], readonly string[]>>;
+}
+
+const MESSAGE_PROFILE: Profile = {
+  keys: new Set(['signed_message', 'authors', 'last_ball_unit', 'timestamp', 'version']),
+  versions: SIGNED_PACKAGE_VERSIONS,
+};
+
+const VOUCHER_PROFILE: Profile = {
+  keys: new Set(['signed_message', 'authors', 'version']),
+  versions: { livenet: ['2.0', '3.0', '4.0'], testnet: ['2.0t', '3.0t', '4.0t'] },
+};
+
 const AUTHOR_KEYS = new Set(['address', 'definition', 'authentifiers']);
 
+interface VerifyOptions {
+  network: ObyteNetwork;
+  expectedSigner?: string;
+}
+
+/** An off-chain signed message (login, receipts). */
 export function verifySignedPackage<M = unknown>(
   pkg: unknown,
-  options: { network: ObyteNetwork; expectedSigner?: string },
+  options: VerifyOptions,
+): Verdict<VerifiedPackage<M>> {
+  return verifyPackage<M>(pkg, options, MESSAGE_PROFILE);
+}
+
+/** A channel voucher: only a package the channel AA's `is_valid_signed_package` accepts. */
+export function verifyVoucherPackage<M = unknown>(
+  pkg: unknown,
+  options: VerifyOptions,
+): Verdict<VerifiedPackage<M>> {
+  return verifyPackage<M>(pkg, options, VOUCHER_PROFILE);
+}
+
+function verifyPackage<M>(
+  pkg: unknown,
+  options: VerifyOptions,
+  profile: Profile,
 ): Verdict<VerifiedPackage<M>> {
   if (!isPlainObject(pkg)) return reject('invalid_signed_package', 'Package must be an object');
-  if (!hasOnlyKeys(pkg, PACKAGE_KEYS)) {
+  if (!hasOnlyKeys(pkg, profile.keys)) {
     return reject('invalid_signed_package', 'Package has unexpected fields');
   }
   if (!('signed_message' in pkg)) {
     return reject('invalid_signed_package', 'Package has no signed_message');
   }
-  const versions: readonly string[] = SIGNED_PACKAGE_VERSIONS[options.network.name];
+  const versions = profile.versions[options.network.name];
   if (typeof pkg['version'] !== 'string' || !versions.includes(pkg['version'])) {
     return reject(
       'invalid_signed_package_network',

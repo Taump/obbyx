@@ -113,6 +113,7 @@ beforeEach(async () => {
   posted = [];
   hub.client.api.postJoint = async ({ unit }: { unit: Record<string, unknown> }) => {
     posted.push(unit);
+    hub.joints.set(String(unit['unit']), unit); // the hub knows what it accepted
     return 'accepted';
   };
   facilitatorStore = new SqliteBatchStore(new SqliteSettlementStore(':memory:').database);

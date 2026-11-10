@@ -1,6 +1,6 @@
 # ADR-0001: Trust model
 
-- Status: accepted (MVP)
+- Status: accepted (MVP); amended 2026-11-10: base AA v1.2 adopted
 - Date: 2026-11-03
 
 ## Context
@@ -19,6 +19,39 @@ funds. "The facilitator never submits fraud proofs" is a policy, not a
 technical guarantee. Confirmed in a local aa-testkit network:
 `aa/test/test_obbyx_binding.oscript.js`, test 2 — an unrelated address receives the whole
 channel balance with a higher client-signed package.
+
+## Update 2026-11-10: base AA v1.2 adopted
+
+New channels are instances of the base AA **v1.2**
+`7UXLI64FC7TMDFGIZZ34GIJHZIGTZUZR` (`aa/channels_base_aa_1.2.oscript`,
+`CHANNEL_BASE_AA`; deployed on testnet, not yet on mainnet). Its only change to v1.1 is the fraud-proof payout: the
+channel balance goes to **the wronged party** (the party that did not start the
+close), whoever submits the proof. A leaked voucher therefore no longer lets
+anyone take funds: a fraud proof built from it pays the wronged party (the
+seller, when the client closed understating its spending), never the
+submitter. Tested in aa-testkit (`aa/test/test_fraud_proof_payout.oscript.js`).
+
+Consequences for this ADR:
+
+- the facilitator is **no longer trusted for funds**: the "custody of channel
+  payment packages" row below is now a **privacy** matter (a leaked voucher
+  reveals who paid whom how much, nothing more);
+- the controls below (encryption at rest, no read API, journaled reads,
+  fingerprint-only logs, no AA-trigger code) stay; package encryption now
+  protects privacy only;
+- channels on v1.1 (`4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ`,
+  `LEGACY_CHANNEL_BASE_AAS`) are **never paid into**: the facilitator refuses
+  their vouchers (`…_channel_not_found`) and offers advertise only v1.2
+  (`extra.baseAa`). They are recognised only so that existing channels can
+  still be closed and defended;
+- **strict voucher package profile.** A voucher the AA's
+  `is_valid_signed_package` rejects is worthless to the seller (no close, no
+  fraud proof), so the facilitator and the watcher verify vouchers with
+  `verifyVoucherPackage`, which accepts a strict subset of what that check
+  accepts (one `sig` author with an embedded definition, no
+  `last_ball_unit`; see the scheme spec, "Package profile").
+
+The text below describes v1.1 and is kept for history.
 
 ## Decision
 
@@ -55,8 +88,7 @@ seller accepts this trust by enabling channel offers (`batch` option of
 - The risk window is only a _disputed close initiated by the client_; it is
   bounded by the channel `timeout`.
 - Replacement path: AA v1.2 whose fraud-proof payout goes to the wronged party
-  regardless of the submitter. Needs aa-testkit tests, a separate review and a
-  deployment on both networks; the AA version then becomes part of
-  `PaymentRequirements.extra`.
+  regardless of the submitter. **Done** (see the update above): v1.2 is
+  `PaymentRequirements.extra.baseAa`, v1.1 channels are close/defend only.
 - Hub trust can be reduced later by cross-checking several hubs or running an
   own ocore node (see ADR-0002 on finality).

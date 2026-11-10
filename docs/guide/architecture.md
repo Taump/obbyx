@@ -19,7 +19,7 @@ packages/
     exact/        requirements, client, facilitator (+ ledger checks, finality, reasons), v1 adapter, store port
     batch/        requirements, client (+ channel store), facilitator, store port, watcher gateway port/protocol
   sdk/          @obbyx/sdk
-    seller/       ObytePaywall, ObyteExactServer / ObyteBatchServer (official @x402 servers), CORS, quotes, payment-identifier, consumed proofs
+    seller/       ObytePaywall, ExactObyteServer / BatchObyteServer (official @x402 servers), CORS, quotes, payment-identifier, consumed proofs
     client/       payingFetch, SpendingBudget
   cli/          @obbyx/cli (obbyx)
     commands/     one file per command (yargs definition + handler)
@@ -46,8 +46,8 @@ code (a CI test enforces it).
 
 | Pattern                             | Where                                                                                                                                                       | Why                                                                                                                             |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **Strategy** (x402 mechanisms)      | `ExactObyteFacilitator`, `BatchObyteFacilitator`, `ExactObyteClient`, `BatchObyteClient`, `ObyteExactServer`, `ObyteBatchServer` registered on `@x402/core` | one interface per role, one class per scheme; new schemes are added without touching the core                                   |
-| **Adapter**                         | `ExactObyteFacilitatorV1` (v1 → v2 shapes), `ObyteExactServer` (our binding inside the official server)                                                     | reuse one mechanism for another protocol shape                                                                                  |
+| **Strategy** (x402 mechanisms)      | `ExactObyteFacilitator`, `BatchObyteFacilitator`, `ExactObyteClient`, `BatchObyteClient`, `ExactObyteServer`, `BatchObyteServer` registered on `@x402/core` | one interface per role, one class per scheme; new schemes are added without touching the core                                   |
+| **Adapter**                         | `ExactObyteFacilitatorV1` (v1 → v2 shapes), `ExactObyteServer` (our binding inside the official server)                                                     | reuse one mechanism for another protocol shape                                                                                  |
 | **Ports and adapters**              | `SettlementStore`, `BatchStore`, `WatcherGateway`, `DiscoveryCatalog`                                                                                       | mechanisms know interfaces; node:sqlite reference stores and Prisma stores implement them; one contract test suite runs on both |
 | **State machine + compare-and-set** | exact settlements (`claimed → … → stable_good`), consumed proofs (`settling → serving → served`), coin reservations                                         | every transition is atomic, so concurrent requests cannot double-broadcast, double-serve or double-spend coins                  |
 | **Idempotency keys**                | `(network, unit hash)`, voucher hash, payment-identifier                                                                                                    | a repeated request returns the stored result                                                                                    |

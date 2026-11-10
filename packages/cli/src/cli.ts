@@ -72,11 +72,15 @@ export function buildCli(argv: readonly string[], state: RunState, width?: numbe
     .option('hub', { type: 'string', global: true, describe: 'Obyte hub WebSocket URL' });
   for (const c of defs.top) cli = cli.command(c as unknown as CommandModule);
   cli = cli
-    .command('channel', 'Payment channels: open, list, status, deposit, close, confirm', (y) => {
-      let ch = y;
-      for (const c of defs.channel) ch = ch.command(c as unknown as CommandModule);
-      return ch.demandCommand(1, 'Choose a channel command').strict();
-    })
+    .command(
+      'channel',
+      'Payment channels: open, list, status, deposit, close, confirm, recover',
+      (y) => {
+        let ch = y;
+        for (const c of defs.channel) ch = ch.command(c as unknown as CommandModule);
+        return ch.demandCommand(1, 'Choose a channel command').strict();
+      },
+    )
     .demandCommand(1, 'Choose a command')
     .recommendCommands()
     .strict()

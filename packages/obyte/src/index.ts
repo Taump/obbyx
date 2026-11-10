@@ -33,15 +33,20 @@ export {
   isSigDefinition,
   verifySignature,
   verifySignedPackage,
+  verifyVoucherPackage,
 } from './signing/signed-message.js';
 export {
   CHANNEL_BASE_AA,
+  CHANNEL_BASE_AA_NETWORKS,
+  LEGACY_CHANNEL_BASE_AAS,
   type ChannelDefinition,
   type ChannelParams,
+  type ParsedChannel,
   channelAddress,
   channelDefinition,
   isAddress,
   isAssetId,
+  parseAnyChannelDefinition,
   parseChannelDefinition,
   validateChannelParams,
 } from './channel/definition.js';

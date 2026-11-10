@@ -14,7 +14,7 @@ Unknown networks in `NETWORKS` and invalid asset ids in `ASSETS_*` are rejected 
 | `HOST` | string | `127.0.0.1` | Interface to listen on. Keep 127.0.0.1 unless the facilitator sits behind a TLS proxy. |
 | `PORT` | number | `4021` | HTTP port. |
 | `DB_PATH` | string | `./data/facilitator.db` | SQLite database file (Prisma). One facilitator process per file (exclusive lock). |
-| `PACKAGE_KEY_FILE` | string | `./data/package.key` | File with the 32-byte key (base64) that encrypts stored channel packages; created with mode 0600 if missing. Keep it out of database backups/copies. |
+| `PACKAGE_KEY_FILE` | string | `./data/package.key` | File with the 32-byte key (base64) that encrypts stored channel packages. Created (mode 0600) only while the database holds no package; with stored packages a missing or different key stops startup. Keep it outside the database directory and its backups. |
 | `NETWORKS` | list (comma-separated) | `obyte:testnet` | Comma-separated CAIP-2 networks to serve: obyte:testnet, obyte:livenet. |
 | `HUB_URL_LIVENET` | string | — | Obyte hub WebSocket URL for livenet (default: the public hub). |
 | `HUB_URL_TESTNET` | string | — | Obyte hub WebSocket URL for testnet (default: the public testnet hub). |
@@ -30,7 +30,7 @@ Unknown networks in `NETWORKS` and invalid asset ids in `ASSETS_*` are rejected 
 | `FACILITATOR_ADDRESSES` | list (comma-separated) | `(empty)` | Comma-separated Obyte addresses the facilitator operator controls; a payment whose payer is one of them is refused. |
 | `FACILITATOR_API_KEYS` | list (comma-separated) | `(empty)` | Comma-separated shared keys for /verify and /settle (Authorization: Bearer). Empty = open: bind to localhost only. |
 | `RATE_LIMIT_PER_MINUTE` | number | `600` | Requests per minute per client to /verify and /settle (0 = unlimited). |
-| `BATCH_ENABLED` | `0` \| `1` \| `true` \| `false` | `1` | Serve the batch-settlement scheme (payment channels). |
+| `BATCH_ENABLED` | `0` \| `1` \| `true` \| `false` | `1` | Serve the batch-settlement scheme (payment channels), on the networks where the channel base AA v1.2 is deployed (testnet only for now). |
 | `MIN_CHANNEL_TIMEOUT_SECONDS` | number | `14400` | Smallest channel dispute window the facilitator accepts. The seller watcher reacts to a close only once it is stable, and stabilization alone can lag ~2 h: keep this above that lag plus any watcher outage. |
 | `WATCHER_ACK_TIMEOUT_MS` | number | `5000` | How long /settle waits for the seller watcher to store a voucher; after that the payment is reported as settlement_pending. |
 | `WATCHER_HEARTBEAT_TIMEOUT_MS` | number | `45000` | A watcher that has not sent a heartbeat for this long is considered offline. |
@@ -55,6 +55,7 @@ Run one watcher per seller address. It uses the wallet created by `obbyx init` i
 | `CLOSE_AFTER_SECONDS` | number | `86400` | Close a channel that has unclaimed payments older than this. |
 | `POLL_INTERVAL_MS` | number | `15000` | How often channels are re-checked on the ledger (in addition to push events). |
 | `HUB_TIMEOUT_MS` | number | `15000` | Timeout of one hub request. |
+| `MIN_CHANNEL_TIMEOUT_SECONDS` | number | `3600` | Refuse (nack) vouchers of channels whose dispute window (AA timeout) is shorter than this many seconds: too little time to answer a dishonest close. |
 
 ## Demo seller (`apps/demo`)
 

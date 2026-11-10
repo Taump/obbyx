@@ -48,7 +48,7 @@ describe('generated reference pages', () => {
       }
     }
     // Event kinds of the payment journal, not error codes.
-    for (const kind of ['package_read']) codes.delete(kind);
+    for (const kind of ['package_read', 'package_unreadable']) codes.delete(kind);
     const missing = [...codes].filter((c) => !documented.includes(c));
     expect(missing).toEqual([]);
   });

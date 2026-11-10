@@ -1,29 +1,38 @@
-# Payment channel AA (base AA v1.1)
+# Payment channel AA (base AA v1.2)
 
-`channels_base_aa_1.1.oscript` is the base autonomous agent of
-[aa-channels-lib](https://github.com/Papabyte/aa-channels-lib) together with
-its original aa-testkit tests (`test/`, `package.json`).
+`channels_base_aa_1.2.oscript` is the base autonomous agent obbyx uses for
+payment channels. It is the base AA of
+[aa-channels-lib](https://github.com/Papabyte/aa-channels-lib) (v1.1),
+rewritten in modern Oscript, with one fix: **a fraud proof pays the wronged
+party** (the one that did not start the close) instead of `trigger.address`.
 
-The original `channels_base_aa_1.1.ojson` is deployed at the same address on
-mainnet and testnet:
+| Version | File                                             | Address                            | Status                                                                   |
+| ------- | ------------------------------------------------ | ---------------------------------- | ------------------------------------------------------------------------ |
+| **1.2** | `channels_base_aa_1.2.oscript`                   | `7UXLI64FC7TMDFGIZZ34GIJHZIGTZUZR` | used by obbyx (`CHANNEL_BASE_AA`); deployed on testnet; mainnet: not yet |
+| 1.1     | `channels_base_aa_1.1.oscript` (Oscript rewrite) | `5KHQT6E6SUVD35D7NVXWEKZNNNHG7ZVM` | testnet only, reference for the diff                                     |
+| 1.1     | original `.ojson` (git history, on-chain)        | `4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ` | retired: `LEGACY_CHANNEL_BASE_AAS`, existing channels can only be closed |
 
-```
-4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ
-```
+Diffs: `channels_base_aa_1.1.ojson-to-oscript.diff` (deployed `.ojson` →
+Oscript, same logic) and `channels_base_aa_1.1-to-1.2.diff` (the fix).
+The AA address is the chash of the definition, so every change of the text
+changes the address; `test/test_base_aa_address.oscript.js` checks that the
+constant in `packages/obyte/src/channel/definition.ts` is the address of the
+1.2 file.
 
-`channels_base_aa_1.1.oscript` is that AA rewritten in modern Oscript
-(`require(...)` instead of `if (...) bounce(...)`, a shared
-`$get_spent_by_peer` function for checking the peer's signed package, formulas
-in backticks). The logic, the response data and the bounce messages are the
-same, and the original tests pass unchanged except for reading the error text
-(see `errMsg` in `test/bootload.js`). The changes are in
-`channels_base_aa_1.1.ojson-to-oscript.diff`.
+### Why 1.2
 
-The AA address is the chash of the definition text, so the rewritten file has
-a **different address**, `5KHQT6E6SUVD35D7NVXWEKZNNNHG7ZVM`. It is deployed on
-testnet only; obbyx still uses `4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ`. The original
-`.ojson` is in the git history of this folder and on-chain (the definition of
-`4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ`).
+In 1.1 the fraud-proof case pays everything to whoever submits it and does not
+check the sender. In obbyx only the client signs vouchers, so:
+
+- a stranger holding a leaked client voucher could take a channel during a
+  dishonest client close;
+- worse, **the client itself** could close declaring 0 and immediately submit
+  its own voucher as a fraud proof (from its own or a second address) to get
+  the whole balance back, before the seller's watcher reacts.
+
+In 1.2 the proof can still come from anyone, but the money always goes to the
+wronged party, so neither attack pays. `test/test_fraud_proof_payout.oscript.js`
+runs both attacks against 1.1 (they succeed) and 1.2 (the seller is paid).
 
 obbyx never deploys this file. Every channel is a **parameterized AA** that
 references the deployed base AA; the file is kept here for reading, reviewing
@@ -36,16 +45,20 @@ and testing the channel logic.
 
 ## Contents
 
-| Path | What it is |
-| --- | --- |
-| `channels_base_aa_1.1.oscript` | The base AA (modern Oscript). |
-| `channels_base_aa_1.1.ojson-to-oscript.diff` | Diff from the deployed `.ojson` to the `.oscript`. |
-| `test/test_with_bytes_1.1.oscript.js` | Scenarios for a channel in bytes (`asset: 'base'`). |
-| `test/test_with_assets_1.1.oscript.js` | The same scenarios for a channel in a custom asset. |
-| `test/test_obbyx_binding.oscript.js` | obbyx: `binding`/`payment_amount` in signed packages, tampering, ADR-0001 fraud-proof risk. |
-| `test/test_obbyx_watcher_actions.oscript.js` | obbyx: exact `close`/`confirm`/`fraud_proof` triggers of the watcher and the CLI. |
-| `test/bootload.js`, `test/mocha.opts` | mocha bootstrap: global `expect`, `errMsg` and chai helpers from aa-testkit. |
-| `package.json` | Isolated test package (mocha, chai, aa-testkit). |
+| Path                                         | What it is                                                                                                 |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `channels_base_aa_1.2.oscript`               | The base AA used by obbyx.                                                                                 |
+| `channels_base_aa_1.1.oscript`               | v1.1 in modern Oscript (reference).                                                                        |
+| `channels_base_aa_1.1-to-1.2.diff`           | The 1.2 fix.                                                                                               |
+| `channels_base_aa_1.1.ojson-to-oscript.diff` | Diff from the deployed `.ojson` to the `.oscript`.                                                         |
+| `test/test_with_bytes.oscript.js`            | Original scenarios for a channel in bytes (`asset: 'base'`), run on 1.1 and 1.2.                           |
+| `test/test_with_assets.oscript.js`           | The same scenarios for a channel in a custom asset, run on 1.1 and 1.2.                                    |
+| `test/test_fraud_proof_payout.oscript.js`    | Who receives a fraud proof: attacks on 1.1, the fix in 1.2.                                                |
+| `test/test_base_aa_address.oscript.js`       | `CHANNEL_BASE_AA` equals the address of the 1.2 file.                                                      |
+| `test/test_obbyx_binding.oscript.js`         | obbyx: `binding`/`payment_amount` in signed packages, tampering, a stranger's fraud proof pays the seller. |
+| `test/test_obbyx_watcher_actions.oscript.js` | obbyx: exact `close`/`confirm`/`fraud_proof` triggers of the watcher and the CLI.                          |
+| `test/bootload.js`, `test/mocha.opts`        | mocha bootstrap: global `expect`, `errMsg` and chai helpers from aa-testkit.                               |
+| `package.json`                               | Isolated test package (mocha, chai, aa-testkit).                                                           |
 
 ## Running the tests
 
@@ -69,7 +82,7 @@ explorer) in child processes; each suite takes up to a couple of minutes.
 
 The obbyx-specific checks (formerly `spikes/aa-channel-binding`) run in the
 same suite: `test/test_obbyx_binding.oscript.js` (extra fields in the signed
-package, ADR-0001 fraud-proof risk) and `test/test_obbyx_watcher_actions.oscript.js`
+package, a stranger's fraud proof) and `test/test_obbyx_watcher_actions.oscript.js`
 (the exact triggers of the seller watcher and the buyer CLI).
 
 ---
@@ -84,8 +97,8 @@ parties deposit funds into the AA; off-chain they exchange **signed packages**
 other party in the current period. Nothing goes on-chain per payment. To get
 the money out, one party starts a close declaring the amounts, the other party
 confirms (or the dispute window expires), and the AA pays out the final
-balances. If the closing party understated what it spent, the other party
-submits a **fraud proof** and takes everything.
+balances. If the closing party understated what it spent, a **fraud proof**
+(the initiator's own higher voucher) gives everything to the other party.
 
 After a close the channel is not destroyed: `period` is incremented and the
 same AA address can be funded and used again.
@@ -98,18 +111,21 @@ In obbyx the channel is used one-way: **A = seller** (payee, x402 `payTo`),
 A channel AA is defined as
 
 ```json
-["autonomous agent", {
-  "base_aa": "4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ",
-  "params": { "addressA": "…", "addressB": "…", "asset": "base", "salt": "…", "timeout": 86400 }
-}]
+[
+  "autonomous agent",
+  {
+    "base_aa": "7UXLI64FC7TMDFGIZZ34GIJHZIGTZUZR",
+    "params": { "addressA": "…", "addressB": "…", "asset": "base", "salt": "…", "timeout": 86400 }
+  }
+]
 ```
 
-| Param | Meaning |
-| --- | --- |
-| `addressA`, `addressB` | The two parties. Only triggers from these addresses can deposit, close or confirm. |
-| `asset` | `'base'` for bytes, otherwise a 44-char asset id. One channel = one asset. |
-| `timeout` | Dispute window in **seconds** (compared with `timestamp`). |
-| `salt` | Optional, not read by the AA. Only changes the address, so the same pair can have several channels. |
+| Param                  | Meaning                                                                                             |
+| ---------------------- | --------------------------------------------------------------------------------------------------- |
+| `addressA`, `addressB` | The two parties. Only triggers from these addresses can deposit, close or confirm.                  |
+| `asset`                | `'base'` for bytes, otherwise a 44-char asset id. One channel = one asset.                          |
+| `timeout`              | Dispute window in **seconds** (compared with `timestamp`).                                          |
+| `salt`                 | Optional, not read by the AA. Only changes the address, so the same pair can have several channels. |
 
 The channel address is the chash of this definition, so it is fully determined
 by the parameters. obbyx recomputes it from the on-chain definition instead of
@@ -117,14 +133,14 @@ trusting parameters from a voucher (`parseChannelDefinition`).
 
 ### State variables
 
-| Var | Meaning |
-| --- | --- |
-| `period` | Current period, starts at `1` on the first accepted deposit, `+1` after each close. Vouchers are valid only for the current period. |
-| `balanceA`, `balanceB` | Total deposited by each party in this period. |
-| `close_initiated_by` | `'A'` / `'B'` while a close is pending, otherwise unset. |
-| `close_start_ts` | Timestamp of the close request. |
-| `spentByA`, `spentByB` | Amounts declared in the close request. |
-| `event_id` | Monotonic counter of accepted events; every response carries it so a watcher can order events and detect gaps. |
+| Var                    | Meaning                                                                                                                             |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `period`               | Current period, starts at `1` on the first accepted deposit, `+1` after each close. Vouchers are valid only for the current period. |
+| `balanceA`, `balanceB` | Total deposited by each party in this period.                                                                                       |
+| `close_initiated_by`   | `'A'` / `'B'` while a close is pending, otherwise unset.                                                                            |
+| `close_start_ts`       | Timestamp of the close request.                                                                                                     |
+| `spentByA`, `spentByB` | Amounts declared in the close request.                                                                                              |
+| `event_id`             | Monotonic counter of accepted events; every response carries it so a watcher can order events and detect gaps.                      |
 
 All per-period vars are reset to `false` (deleted) on close; `period` and
 `event_id` keep growing.
@@ -181,12 +197,12 @@ if: trigger from A or B AND trigger.data.close AND no close pending
 
 Trigger data:
 
-| Field | Meaning |
-| --- | --- |
-| `close` | Any truthy value. |
-| `period` | Must equal `var['period']`, else `wrong period`. |
+| Field               | Meaning                                                                    |
+| ------------------- | -------------------------------------------------------------------------- |
+| `close`             | Any truthy value.                                                          |
+| `period`            | Must equal `var['period']`, else `wrong period`.                           |
 | `transferredFromMe` | What the initiator declares it spent to the peer (integer ≥ 0, default 0). |
-| `sentByPeer` | Optional signed package from the peer, proving what the peer spent. |
+| `sentByPeer`        | Optional signed package from the peer, proving what the peer spent.        |
 
 `sentByPeer` checks (each failure bounces):
 
@@ -240,10 +256,10 @@ the **larger** one (on a tie A counts as larger: `finalA >= finalB` → B gets
 the exact amount, A the send-all) gets a send-all output and therefore pays the network fees and collects
 everything else left on the AA, including accumulated bounce fees:
 
-| Channel asset | Smaller party | Larger party |
-| --- | --- | --- |
-| bytes | `final + 10000` bytes | send-all bytes |
-| custom asset | `final` asset + `10000` bytes | send-all asset + send-all bytes |
+| Channel asset | Smaller party                 | Larger party                    |
+| ------------- | ----------------------------- | ------------------------------- |
+| bytes         | `final + 10000` bytes         | send-all bytes                  |
+| custom asset  | `final` asset + `10000` bytes | send-all asset + send-all bytes |
 
 Then: response `data` `{ closed: 1, period, event_id }`, `period += 1`, all
 per-period vars cleared, `event_id += 1`.
@@ -255,21 +271,25 @@ if: trigger.data.fraud_proof AND close pending AND trigger.data.sentByPeer
 ```
 
 `sentByPeer` must be a package signed by the **close initiator** for this AA
-and this period (same checks as in *Start closing*). If its `amount_spent` is
+and this period (same checks as in _Start closing_). If its `amount_spent` is
 **strictly greater** than what the initiator declared it spent
 (`spentBy{initiator}`), the initiator lied in its own favour:
 
-- the trigger sender receives **everything** on the AA: send-all bytes and, for
-  an asset channel, send-all asset;
+- the **wronged party** (the one that did not initiate the close) receives
+  **everything** on the AA: send-all bytes and, for an asset channel, send-all
+  asset — whoever submitted the proof (v1.2; in v1.1 it was the trigger sender);
 - response `data`: `{ closed: 1, fraud_proof: 1, period, event_id }`;
 - `period += 1`, per-period vars cleared, `event_id += 1`.
 
 Otherwise it bounces with `the peer didn't lie in his favor`.
 
-Note that the sender of the fraud proof is **not** checked to be a party: any
-holder of a higher voucher signed by the initiator can submit it and take the
-whole balance. This is the trust-model risk described in ADR-0001 — a client
-voucher must not leak while that client's close is pending.
+The sender of the fraud proof is not checked to be a party: anyone holding a
+higher voucher signed by the initiator may submit it, but the payout goes to
+the wronged party, so nobody gains by submitting a proof against the other
+side's interest. The voucher must still be valid for `is_valid_signed_package`:
+only the keys `signed_message`, `authors`, `version` (no `timestamp`, no
+`last_ball_unit`, no version `1.0`); obbyx refuses any other shape as a payment
+(`verifyVoucherPackage`), because such a voucher could never be used on-chain.
 
 ### Lifecycle
 
@@ -283,7 +303,7 @@ voucher must not leak while that client's close is pending.
              │ confirm by the other party (any time)       │ confirm by the initiator │ fraud_proof (anyone,
              │                                             │ after timeout            │ higher voucher of initiator)
              ▼                                             ▼                          ▼
-     payout by final balances                     payout by final balances    everything → sender
+     payout by final balances                     payout by final balances    everything → wronged party
              └────────────────────────── period N+1, balances reset ─────────────────┘
 ```
 
@@ -299,7 +319,11 @@ voucher must not leak while that client's close is pending.
   signature; B can confirm at once, otherwise A confirms after `timeout`.
 - **Client closes**: B sends `close` declaring `transferredFromMe`. If B
   understates it, the watcher submits `fraud_proof` with a higher voucher and
-  receives the whole balance; if B is honest, the watcher confirms.
+  the seller receives the whole balance; if B is honest, the watcher confirms.
+  The client must therefore declare at least the highest voucher it ever
+  signed, and must not sign anything after starting the close (the CLI keeps a
+  durable `maxSigned` and a closing flag for this).
 - This is why the watcher must stay online and hold bytes for these triggers,
-  and why the minimum channel `timeout` is enforced to be larger than the
-  maximum tolerated watcher downtime.
+  and why the minimum channel `timeout` (at least 3600 s) is enforced to be
+  larger than the maximum tolerated watcher downtime plus the stabilisation lag:
+  a client's dishonest close must be answered before the client can confirm it.

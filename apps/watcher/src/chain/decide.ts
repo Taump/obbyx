@@ -1,6 +1,10 @@
 /**
  * Pure decision logic of the seller watcher for one channel (party A = seller,
- * party B = client), against the base channel AA 4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ.
+ * party B = client), against the channel base AAs: v1.2
+ * 7UXLI64FC7TMDFGIZZ34GIJHZIGTZUZR (CHANNEL_BASE_AA, the only one new vouchers
+ * are accepted for) and the legacy v1.1 4IRUGAUUCAQ6QRQLG4SNOLOE6VW2STWZ
+ * (LEGACY_CHANNEL_BASE_AAS: existing channels are still closed and defended;
+ * close / confirm / fraud_proof triggers are the same on both).
  *
  * Safety argument (ADR-0003, synchronous ack): the facilitator reports a
  * voucher as paid only after this watcher stored it, so the local database
@@ -43,12 +47,16 @@ export interface ClosePolicy {
   readonly confirmGraceSeconds?: number;
 }
 
-export type Decision =
+/**
+ * What to do now. `alert` reports an invariant violation to log loudly; it
+ * never stops the seller from cashing out (the decision is still taken).
+ */
+export type Decision = (
   | { readonly action: 'none'; readonly why: string }
   | { readonly action: 'fraud_proof'; readonly period: number; readonly why: string }
   | { readonly action: 'confirm'; readonly period: number; readonly why: string }
   | { readonly action: 'close'; readonly period: number; readonly why: string }
-  | { readonly action: 'alert'; readonly why: string };
+) & { readonly alert?: string };
 
 export function decide(input: {
   readonly state: ChannelState;
@@ -93,32 +101,43 @@ export function decide(input: {
   }
 
   if (ours === undefined) return { action: 'none', why: 'nothing earned in this period' };
-  if (ours.amountSpent > state.balanceB) {
-    // Must never happen: the facilitator checks the confirmed deposit.
-    return {
-      action: 'alert',
-      why: `voucher ${ours.amountSpent} exceeds balanceB ${state.balanceB}`,
-    };
-  }
-  if (ours.amountSpent >= policy.closeAtAmount) {
-    return { action: 'close', period, why: `earned ${ours.amountSpent} ≥ ${policy.closeAtAmount}` };
-  }
-  if (now - ours.firstReceivedAt >= policy.closeAfterSeconds) {
-    return { action: 'close', period, why: `period open for ${now - ours.firstReceivedAt} s` };
-  }
-  return { action: 'none', why: 'within policy' };
+  const decision: Decision =
+    ours.amountSpent >= policy.closeAtAmount
+      ? { action: 'close', period, why: `earned ${ours.amountSpent} ≥ ${policy.closeAtAmount}` }
+      : now - ours.firstReceivedAt >= policy.closeAfterSeconds
+        ? { action: 'close', period, why: `period open for ${now - ours.firstReceivedAt} s` }
+        : { action: 'none', why: 'within policy' };
+  // Must never happen (the facilitator checks the confirmed deposit), but it
+  // must not keep the seller from cashing out either: the AA clamps the
+  // payout to the balance, so we still close and only raise the alarm.
+  return ours.amountSpent > state.balanceB
+    ? { ...decision, alert: `voucher ${ours.amountSpent} exceeds balanceB ${state.balanceB}` }
+    : decision;
 }
 
-/** Parses the AA state vars of a channel into a ChannelState. */
-export function channelState(vars: Record<string, unknown>): ChannelState {
-  const num = (v: unknown) => (typeof v === 'number' ? v : undefined);
-  const big = (v: unknown) => (typeof v === 'number' ? BigInt(v) : undefined);
+/**
+ * Parses the AA state vars of a channel into a ChannelState. A var the AA
+ * deleted (or never set) is absent; a var that is PRESENT with an unexpected
+ * type means a malformed answer: undefined (skip this tick), never a guess
+ * such as a zero balance.
+ */
+export function channelState(vars: Record<string, unknown>): ChannelState | undefined {
   const by = vars['close_initiated_by'];
+  const ints = {
+    period: vars['period'],
+    closeStartTs: vars['close_start_ts'],
+    spentByB: vars['spentByB'],
+    balanceB: vars['balanceB'],
+  };
+  if (Object.values(ints).some((v) => v !== undefined && !Number.isSafeInteger(v)))
+    return undefined;
+  if (by !== undefined && by !== 'A' && by !== 'B') return undefined;
+  const { period, closeStartTs, spentByB, balanceB } = ints as Record<string, number | undefined>;
   return {
-    period: num(vars['period']),
-    closeInitiatedBy: by === 'A' || by === 'B' ? by : undefined,
-    closeStartTs: num(vars['close_start_ts']),
-    spentByB: big(vars['spentByB']),
-    balanceB: big(vars['balanceB']) ?? 0n,
+    period,
+    closeInitiatedBy: by,
+    closeStartTs,
+    spentByB: spentByB === undefined ? undefined : BigInt(spentByB),
+    balanceB: BigInt(balanceB ?? 0), // deleted by the AA after a close: no deposit yet
   };
 }

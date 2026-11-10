@@ -3,7 +3,11 @@ import type { Server } from 'node:http';
 import express from 'express';
 import obyte from 'obyte';
 import { HTTPFacilitatorClient } from '@x402/core/http';
-import { decodePaymentRequiredHeader, encodePaymentSignatureHeader } from '@x402/core/http';
+import {
+  decodePaymentRequiredHeader,
+  decodePaymentResponseHeader,
+  encodePaymentSignatureHeader,
+} from '@x402/core/http';
 import { ExactObyteClient, SqliteSettlementStore } from '@obbyx/x402-obyte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadFacilitatorConfig } from '../../../apps/facilitator/src/config.js';
@@ -304,6 +308,18 @@ describe('end to end: client → seller paywall → facilitator → (fake) hub',
     expect(failed.response.status).toBe(402);
     // the 402 is not authenticated and the signed unit could still be broadcast
     expect(budget.used('base')).toBe(20_000n);
+    // The same payment again: the stored refusal is replayed WITH its
+    // PAYMENT-RESPONSE, so the client learns why (not a bare 402).
+    const again = await fetch(`${base}/api/answer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'PAYMENT-SIGNATURE': failed.paymentHeader! },
+      body: '{"question":"z"}',
+    });
+    expect(again.status).toBe(402);
+    expect(await again.json()).toEqual({ error: 'payment_failed' });
+    expect(decodePaymentResponseHeader(again.headers.get('PAYMENT-RESPONSE')!)).toMatchObject({
+      success: false,
+    });
   });
 
   it('the buyer refuses offers above its limit', async () => {

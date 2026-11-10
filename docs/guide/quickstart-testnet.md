@@ -85,13 +85,15 @@ Watch the same flow step by step in the browser: [playground](./playground.md).
 
 | You are                  | Next                                                                                                                                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Seller**               | Put `ObytePaywall` (or the official `@x402/express` with `ObyteExactServer`) in front of your routes: [SDK](./sdk.md). For instant channel payments run a watcher: [payment channels](./channels.md). |
+| **Seller**               | Put `ObytePaywall` (or the official `@x402/express` with `ExactObyteServer`) in front of your routes: [SDK](./sdk.md). For instant channel payments run a watcher: [payment channels](./channels.md). |
 | **Buyer / agent**        | `payingFetch` with a budget ([SDK](./sdk.md)) or `obbyx pay` ([CLI reference](/reference/cli)); the official `@x402/fetch` works too ([x402 compatibility](./x402-compatibility.md)).                 |
 | **Facilitator operator** | Docker Compose below, then [operations](./operations.md) and [security](./security.md).                                                                                                               |
 
 ### Facilitator with Docker Compose
 
 ```sh
+# once: the package key, outside the data volume (see security.md)
+mkdir -p ~/.obbyx-facilitator && (umask 077; openssl rand -base64 32 > ~/.obbyx-facilitator/package.key)
 docker compose up -d facilitator              # http://127.0.0.1:4021, data in a volume
 curl http://127.0.0.1:4021/health
 # sellers with channels: a watcher with the seller wallet from step 1

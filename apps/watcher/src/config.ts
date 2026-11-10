@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import { MAX_TIMER_MS, envFlag, flagOn, hubUrlSchema } from '@obbyx/obyte/config';
 import { z } from 'zod';
 
+/** Shortest dispute window (AA timeout) of a channel whose vouchers are accepted (seconds). */
+export const MIN_CHANNEL_TIMEOUT_SECONDS = 3600;
+
 /** Seller watcher configuration (environment variables). Documented in docs/reference/configuration.md. */
 export const watcherEnvSchema = z
   .object({
@@ -61,6 +64,14 @@ export const watcherEnvSchema = z
       .max(MAX_TIMER_MS)
       .default(15_000)
       .describe('Timeout of one hub request.'),
+    MIN_CHANNEL_TIMEOUT_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(MIN_CHANNEL_TIMEOUT_SECONDS)
+      .default(MIN_CHANNEL_TIMEOUT_SECONDS)
+      .describe(
+        'Refuse (nack) vouchers of channels whose dispute window (AA timeout) is shorter than this many seconds: too little time to answer a dishonest close.',
+      ),
   })
   .superRefine((e, ctx) => {
     const url = e.FACILITATOR_URL;

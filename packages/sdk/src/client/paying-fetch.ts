@@ -16,6 +16,7 @@ import { ObbyxError } from '@obbyx/obyte';
 import { type Logger, moduleLogger } from '@obbyx/obyte/logger';
 import type { BudgetReservation, SpendingBudget } from './budget.js';
 import {
+  BATCH_REASONS,
   BATCH_SCHEME,
   type BatchObyteClient,
   EXACT_SCHEME,
@@ -63,6 +64,40 @@ export class PaymentPendingError extends ObbyxError {
   }
 }
 
+/**
+ * A payment was signed and sent, but no answer came back (network error):
+ * the seller may have charged it. Retry the same request with
+ * `paymentHeader` (it never pays twice) instead of paying again.
+ */
+export class PaymentOutcomeUnknownError extends ObbyxError {
+  constructor(
+    readonly paymentHeader: string,
+    cause: unknown,
+  ) {
+    super(
+      'outcome_unknown',
+      `The paid request got no answer (${cause instanceof Error ? cause.message : String(cause)}); retry the same request later with the same payment`,
+      { cause },
+    );
+  }
+}
+
+/**
+ * True when a payment was sent and its outcome is not known: a 5xx, a 409
+ * (in progress), a pending/busy answer, an error answer without
+ * PAYMENT-RESPONSE, or a channel voucher answered without PAYMENT-RESPONSE
+ * (it stays pending). Retry the same request with `paymentHeader`.
+ */
+export function paymentOutcomeUnknown(result: PaidResponse): boolean {
+  if (result.paymentHeader === undefined) return false;
+  const { response, payment } = result;
+  if (payment?.success === true) return false;
+  if (response.status >= 500 || response.status === 409) return true;
+  if (payment === undefined)
+    return !response.ok || acceptedOf(result.paymentHeader)?.scheme === BATCH_SCHEME;
+  return payment.errorReason === 'settlement_pending' || payment.errorReason === BATCH_REASONS.busy;
+}
+
 export async function payingFetch(
   url: string,
   init: RequestInit & {
@@ -81,9 +116,19 @@ export async function payingFetch(
       headers: { ...headersOf(init.headers), ...(header ? { 'PAYMENT-SIGNATURE': header } : {}) },
     });
 
+  // Once a payment is attached, a request that gets no answer has an unknown
+  // outcome: report the payment so the caller can retry with it.
+  const paidRequest = async (header: string) => {
+    try {
+      return await request(header);
+    } catch (err) {
+      throw new PaymentOutcomeUnknownError(header, err);
+    }
+  };
+
   let header = init.paymentHeader;
   let reservation: BudgetReservation | undefined;
-  let response = await request(header);
+  let response = header === undefined ? await request() : await paidRequest(header);
   if (response.status !== 402 && header === undefined) return { response };
 
   if (header === undefined) {
@@ -97,7 +142,7 @@ export async function payingFetch(
       options,
       log,
     ));
-    response = await request(header);
+    response = await paidRequest(header);
   }
 
   const deadline = Date.now() + (options.pendingTimeoutMs ?? 120_000);
@@ -119,7 +164,7 @@ export async function payingFetch(
     );
     await response.body?.cancel();
     await new Promise((r) => setTimeout(r, wait));
-    response = await request(header);
+    response = await paidRequest(header);
   }
 }
 
@@ -175,7 +220,11 @@ async function signPayment(
       payload: result.payload,
       ...(offer.extensions ? { extensions: withPaymentId(offer.extensions, paymentId) } : {}),
     };
-    return { header: encodePaymentSignatureHeader(payload), reservation };
+    const header = encodePaymentSignatureHeader(payload);
+    // Kept with the pending voucher: the operation can be retried after a crash.
+    if (candidate.scheme === BATCH_SCHEME)
+      options.mechanisms.batch?.rememberPaymentHeader(candidate, header);
+    return { header, reservation };
   }
   // Nothing else to pay with: report why the channel could not (e.g. payment_pending).
   throw lastChannelError ?? new ObbyxError('no_acceptable_offer', 'No offer could be paid');

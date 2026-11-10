@@ -41,7 +41,7 @@ clients use `@obbyx/x402-obyte` from npm with the official `@x402/*` packages
 
 The upstream `@x402/obyte` package is a **slim extract**:
 
-- the mechanism classes (`ExactObyteClient`, `ExactObyteFacilitator`, `ObyteExactServer`) and the pure validation (`validateExactUnit`, `verifySignedPackage`, network ids, amounts);
+- the mechanism classes (`ExactObyteClient`, `ExactObyteFacilitator`, `ExactObyteServer`) and the pure validation (`validateExactUnit`, `verifySignedPackage`, network ids, amounts);
 - no dependency on our workspace packages, no SQLite stores (the facilitator store becomes an interface with an in-memory default), no coin-reservation store (optional hook);
 - **no x402 v1** (not required for new chains; less surface to review);
 - relicensed Apache-2.0 (we own the code).
@@ -60,7 +60,7 @@ The upstream `@x402/obyte` package is a **slim extract**:
 | `batch-settlement` binding: commitment format, verification, storage/id, double-spend, expiry, redemption, trust model | ✅ spec sections 1–7                                                                                                        |
 | Dynamic pricing in `batch-settlement`                                                                                  | ⚠️ deviation: fixed price (`payment_amount == amount`), stated in the spec                                                  |
 | `EXTENSION-RESPONSES` (bazaar)                                                                                         | ✅ (reported after a successful settle)                                                                                     |
-| Three interfaces per mechanism                                                                                         | ✅ `exact` (also in `upstream/`); ✅ `batch-settlement`: `ObyteBatchServer` (contract test with `@x402/express`/`fetch`)    |
+| Three interfaces per mechanism                                                                                         | ✅ `exact` (also in `upstream/`); ✅ `batch-settlement`: `BatchObyteServer` (contract test with `@x402/express`/`fetch`)    |
 | Upstream-style tests (`test/unit`, `test/integrations`, `e2e/config/mechanisms_obyte.json`)                            | ✅ in `upstream/` (73 tests, `pnpm upstream:check`); upstream's tsup/eslint/e2e run in an upstream checkout                 |
 | Browser CORS rules of `transports-v2/http.md`                                                                          | ✅ `ObytePaywall({ cors })` + `preflight()`; the official middleware leaves CORS to the app (documented)                    |
 

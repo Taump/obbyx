@@ -1,4 +1,4 @@
-/** Seller-side defaults shared by ObytePaywall and ObyteExactServer (seconds). */
+/** Seller-side defaults shared by ObytePaywall and ExactObyteServer (seconds). */
 export const DEFAULT_QUOTE_TTL_SECONDS = 300;
 /** Freshness window of the payment unit's timestamp offered in `maxTimeoutSeconds`. */
 export const DEFAULT_MAX_TIMEOUT_SECONDS = 300;

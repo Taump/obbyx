@@ -1,6 +1,7 @@
 // obbyx seller watcher database (SQLite, one watcher process per file).
 // Holds the client-signed vouchers that defend the seller's channels — keep it
-// private and backed up. Amounts are decimal strings (atomic units).
+// private and backed up. Amounts are in atomic units (payment amounts as
+// decimal strings; the cumulative amount_spent ≤ 1e15 as an integer).
 
 generator client {
   provider = "prisma-client"
@@ -13,43 +14,55 @@ datasource db {
 
 /// Vouchers received from the facilitator (seq = facilitator journal cursor).
 model Voucher {
-  seq           Int    @id
+  seq           Int      @id
   network       String
   aa            String
   period        Int
-  amountSpent   String @map("amount_spent")
-  paymentAmount String @map("payment_amount")
+  amountSpent   BigInt   @map("amount_spent")
+  paymentAmount String   @map("payment_amount")
   binding       String
-  packageJson   String @map("package_json")
-  receivedAt    Int    @map("received_at")
+  packageJson   String   @map("package_json")
+  receivedAt    Int      @map("received_at")
+  /// Passes the AA profile (verifyVoucherPackage): only such vouchers are
+  /// carried by a close / fraud proof. null: stored before this check, decided
+  /// by the startup pass; false: the AA would reject it.
+  verified      Boolean?
 
-  @@index([aa, period])
+  @@index([aa, period, amountSpent])
+  @@index([aa, period, packageJson])
   @@map("vouchers")
 }
 
 /// Channels this watcher defends (params from the on-chain AA definition).
 model Channel {
-  aa        String @id
-  network   String
-  payer     String
-  asset     String
-  timeout   Int
-  firstSeen Int    @map("first_seen")
+  aa                String @id
+  network           String
+  payer             String
+  asset             String
+  timeout           Int
+  firstSeen         Int    @map("first_seen")
+  /// Period of a client-initiated close in progress: the channel is reported
+  /// "closing" to the facilitator until the AA moves to a later period.
+  clientClosePeriod Int?   @map("client_close_period")
 
   @@map("channels")
 }
 
 /// On-chain triggers sent by the watcher (close / confirm / fraud_proof).
 model Action {
-  id        Int     @id @default(autoincrement())
-  aa        String
-  period    Int
-  kind      String
-  unit      String?
-  status    String
-  error     String?
-  createdAt Int     @map("created_at")
-  updatedAt Int     @map("updated_at")
+  id         Int     @id @default(autoincrement())
+  aa         String
+  period     Int
+  kind       String
+  unit       String?
+  status     String
+  error      String?
+  /// Units broadcast (or possibly broadcast) for this row.
+  attempts   Int     @default(0)
+  /// Seq of the voucher the last close / fraud_proof carried (null: none known).
+  voucherSeq Int?    @map("voucher_seq")
+  createdAt  Int     @map("created_at")
+  updatedAt  Int     @map("updated_at")
 
   @@unique([aa, period, kind])
   @@map("actions")

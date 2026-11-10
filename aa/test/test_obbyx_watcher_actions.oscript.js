@@ -22,7 +22,7 @@ describe('obbyx watcher/CLI triggers against the real channel AA', function () {
 
   before(async () => {
     this.network = await Network.create()
-      .with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.1.oscript') })
+      .with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.2.oscript') })
       .with.wallet({ seller: 1e9 })
       .with.wallet({ client: 10e9 })
       .run();

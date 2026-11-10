@@ -38,15 +38,15 @@ handler runs once; a repeated request with the same payment gets the stored
 response. Optional: payment channels (`batch`), `payment-identifier`,
 `authorization` flow.
 
-## Sell with the official `@x402/express`: `ObyteExactServer`
+## Sell with the official `@x402/express`: `ExactObyteServer`
 
 ```ts
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
-import { ConsumedProofsStore, ObyteExactServer } from '@obbyx/sdk';
+import { ConsumedProofsStore, ExactObyteServer } from '@obbyx/sdk';
 
 const server = new x402ResourceServer(new HTTPFacilitatorClient({ url })).register(
   'obyte:testnet',
-  new ObyteExactServer({
+  new ExactObyteServer({
     sellerId: 'api',
     secret: SELLER_SECRET,
     proofs: new ConsumedProofsStore('proofs.db'),
@@ -65,7 +65,7 @@ app.use(
 );
 ```
 
-Channel payments: register `ObyteBatchServer` the same way, with
+Channel payments: register `BatchObyteServer` the same way, with
 `minChannelTimeoutSeconds` equal to the facilitator's
 `MIN_CHANNEL_TIMEOUT_SECONDS`, and accept `scheme: 'batch-settlement'`.
 

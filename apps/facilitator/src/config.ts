@@ -1,5 +1,7 @@
+import { dirname, relative, resolve, isAbsolute } from 'node:path';
 import { OBYTE_NETWORKS, type ObyteNetwork, getNetwork, isAddress, isAssetId } from '@obbyx/obyte';
 import {
+  ConfigError,
   MAX_TIMER_MS,
   envFlag,
   envPort,
@@ -37,7 +39,7 @@ export const facilitatorEnvSchema = z.object({
     .string()
     .default('./data/package.key')
     .describe(
-      'File with the 32-byte key (base64) that encrypts stored channel packages; created with mode 0600 if missing. Keep it out of database backups/copies.',
+      'File with the 32-byte key (base64) that encrypts stored channel packages. Created (mode 0600) only while the database holds no package; with stored packages a missing or different key stops startup. Keep it outside the database directory and its backups.',
     ),
   NETWORKS: list
     .default(['obyte:testnet'])
@@ -121,11 +123,14 @@ export const facilitatorEnvSchema = z.object({
     .describe('Requests per minute per client to /verify and /settle (0 = unlimited).'),
   BATCH_ENABLED: envFlag
     .default('1')
-    .describe('Serve the batch-settlement scheme (payment channels).'),
+    .describe(
+      'Serve the batch-settlement scheme (payment channels), on the networks where the channel base AA v1.2 is deployed (testnet only for now).',
+    ),
   MIN_CHANNEL_TIMEOUT_SECONDS: z.coerce
     .number()
     .int()
-    .min(60)
+    // Floor 1 h: the watcher reacts to a close only once it is stable (~1-2 h lag).
+    .min(3600)
     .default(14_400)
     .describe(
       'Smallest channel dispute window the facilitator accepts. The seller watcher reacts to a close only once it is stable, and stabilization alone can lag ~2 h: keep this above that lag plus any watcher outage.',
@@ -221,6 +226,13 @@ export function loadFacilitatorConfig(
     }
   });
   const e = loadConfig(schema, env);
+  // The default key path (./data) is kept for existing deployments, but in
+  // production the path must be chosen: next to the DB, a copy holds both.
+  if (env['NODE_ENV'] === 'production' && (env['PACKAGE_KEY_FILE'] ?? '').trim() === '') {
+    throw new ConfigError([
+      'PACKAGE_KEY_FILE: must be set when NODE_ENV=production, outside the database directory (an existing deployment may set ./data/package.key and move the file later)',
+    ]);
+  }
   return {
     host: e.HOST,
     port: e.PORT,
@@ -253,4 +265,13 @@ export function loadFacilitatorConfig(
       minWatcherBytes: e.WATCHER_MIN_BYTES,
     },
   };
+}
+
+/** The package key file lies inside the database's directory (a copy would hold both). */
+export function packageKeyNextToDb(
+  config: Pick<FacilitatorConfig, 'dbPath' | 'packageKeyFile'>,
+): boolean {
+  if (config.dbPath === ':memory:') return false;
+  const rel = relative(resolve(dirname(config.dbPath)), resolve(config.packageKeyFile));
+  return !rel.startsWith('..') && !isAbsolute(rel);
 }

@@ -337,6 +337,10 @@ export class ObytePaywall {
         res.status(409).json({ error: 'payment_in_progress' });
         return;
       case 'failed':
+        // Replay the refusal itself: without PAYMENT-RESPONSE the client could
+        // not tell that its voucher was refused and would keep it pending.
+        if (record.paymentResponse !== null)
+          res.setHeader('PAYMENT-RESPONSE', record.paymentResponse);
         res.status(402).json({ error: 'payment_failed' });
         return;
       case 'paid_not_served':

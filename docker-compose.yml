@@ -1,5 +1,12 @@
 # obbyx on Obyte testnet. Facilitator only:  docker compose up -d facilitator
 # With a seller watcher (channels):            docker compose --profile watcher up -d
+#
+# Before the first start, create the facilitator's package key OUTSIDE the data
+# volume (it encrypts the stored channel vouchers; a copy of the volume must
+# not hold its key):
+#   mkdir -p ~/.obbyx-facilitator && (umask 077; openssl rand -base64 32 > ~/.obbyx-facilitator/package.key)
+# The container runs as uid 1000 ("node"); on Linux the key file must be owned
+# by that uid with mode 0600. Never replace it once vouchers are stored.
 services:
   facilitator:
     build: { context: ., args: { APP: facilitator } }
@@ -8,7 +15,8 @@ services:
     environment:
       HOST: 0.0.0.0 # inside the container; publish only on localhost below
       DB_PATH: /data/facilitator.db
-      PACKAGE_KEY_FILE: /data/package.key
+      # Read-only secret mount, separate from the data volume (see the header).
+      PACKAGE_KEY_FILE: /run/secrets/package.key
       NETWORKS: obyte:testnet
       FINALITY: stable
       # FACILITATOR_API_KEYS: change-me   # required before exposing it beyond localhost
@@ -16,6 +24,9 @@ services:
       - '127.0.0.1:4021:4021'
     volumes:
       - facilitator-data:/data
+    secrets:
+      - source: facilitator_package_key
+        target: package.key
     healthcheck:
       test:
         [
@@ -48,6 +59,10 @@ services:
       # The container runs as uid 1000 ("node"); on Linux the wallet file must be
       # readable by that uid (or set `user:` to the owner's uid).
       - ${OBBYX_SELLER_HOME:-~/.obbyx-seller}:/wallet:ro
+
+secrets:
+  facilitator_package_key:
+    file: ${OBBYX_FACILITATOR_KEY:-~/.obbyx-facilitator/package.key}
 
 volumes:
   facilitator-data:

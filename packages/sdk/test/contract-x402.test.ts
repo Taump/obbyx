@@ -20,7 +20,7 @@ import {
 import { HASH_A, HASH_C, addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { FakeHub } from '../../x402-obyte/test/fake-hub.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
-import { ObyteExactServer } from '../src/seller/x402-server.js';
+import { ExactObyteServer } from '../src/seller/x402-server.js';
 import { payingFetch } from '../src/client/paying-fetch.js';
 import { ObytePaywall } from '../src/seller/paywall.js';
 import { offlineComposer } from '../../x402-obyte/test/offline-composer.js';
@@ -74,7 +74,7 @@ beforeEach(async () => {
     new HTTPFacilitatorClient({ url: facilitatorUrl }),
   ).register(
     NET,
-    new ObyteExactServer({
+    new ExactObyteServer({
       sellerId: 'api',
       secret: 's'.repeat(32),
       proofs: new ConsumedProofsStore(':memory:'),

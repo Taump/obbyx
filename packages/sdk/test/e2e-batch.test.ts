@@ -105,6 +105,7 @@ const batchClient = () =>
     privateKey: clientKey,
     store: channels,
     logger: silent,
+    maxAmount: new Map([['base', 1_000n]]),
   });
 
 const ask = (q: string, header?: string, pendingTimeoutMs = 120_000) =>
@@ -196,6 +197,8 @@ describe('end to end: AA channel payments (batch-settlement)', () => {
       expect(pending).toMatchObject({ code: 'settlement_pending' });
       const header = (pending as { paymentHeader: string }).paymentHeader;
       expect(channels.get(AA)?.pending).not.toBeNull();
+      // Kept with the pending voucher: retryable after a crash.
+      expect(channels.get(AA)?.pending?.paymentHeader).toBe(header);
       expect(handlerCalls).toBe(0);
       await expect(ask('another operation')).rejects.toMatchObject({ code: 'payment_pending' });
 

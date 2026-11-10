@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import vectors from './fixtures/testnet-vectors.json' with { type: 'json' };
 import obyte from 'obyte';
-import { getBase64Hash, getUnitHash, getUnitHashToSign, verify } from 'obyte/lib/internal.js';
-import { channelAddress, parseChannelDefinition } from '../src/channel/definition.js';
+import {
+  getBase64Hash,
+  getSignedPackageHashToSign,
+  getUnitHash,
+  getUnitHashToSign,
+  sign as signHash,
+  verify,
+} from 'obyte/lib/internal.js';
+import {
+  CHANNEL_BASE_AA,
+  LEGACY_CHANNEL_BASE_AAS,
+  channelAddress,
+  channelDefinition,
+  parseAnyChannelDefinition,
+  parseChannelDefinition,
+} from '../src/channel/definition.js';
 import { expectedCommissions } from '../src/unit/exact-unit.js';
 import { OBYTE_NETWORKS } from '../src/core/networks.js';
-import { verifySignedPackage } from '../src/signing/signed-message.js';
+import { verifySignedPackage, verifyVoucherPackage } from '../src/signing/signed-message.js';
 import { addressOf, testKey } from './helpers.js';
 
 /**
@@ -37,11 +51,26 @@ describe('conformance with the Obyte testnet ledger', () => {
     });
   });
 
-  it('derives the address of a real channel AA from its parameters', () => {
+  it('recognises a real (v1.1) channel AA for closing only, never for payments', () => {
+    const [, body] = vectors.channel.definition as [string, { base_aa: string; params: never }];
+    expect(body.base_aa).toBe(LEGACY_CHANNEL_BASE_AAS[0]);
+    expect(channelAddress(body.params, body.base_aa)).toBe(vectors.channel.address);
+    const parsed = parseAnyChannelDefinition(vectors.channel.address, vectors.channel.definition);
+    expect(parsed).toMatchObject({ ok: true, value: { legacy: true, baseAa: body.base_aa } });
+    expect(
+      parseChannelDefinition(vectors.channel.address, vectors.channel.definition),
+    ).toMatchObject({ ok: false, reason: 'invalid_channel_definition' });
+  });
+
+  it('accepts a channel on the current base AA', () => {
     const [, body] = vectors.channel.definition as [string, { params: never }];
-    expect(channelAddress(body.params)).toBe(vectors.channel.address);
-    const parsed = parseChannelDefinition(vectors.channel.address, vectors.channel.definition);
-    expect(parsed.ok).toBe(true);
+    const def = channelDefinition(body.params);
+    expect(def[1].base_aa).toBe(CHANNEL_BASE_AA);
+    expect(parseChannelDefinition(channelAddress(body.params), def)).toMatchObject({ ok: true });
+    expect(parseAnyChannelDefinition(channelAddress(body.params), def)).toMatchObject({
+      ok: true,
+      value: { legacy: false },
+    });
   });
 
   it('rejects a definition that does not match the channel address or base AA', () => {
@@ -50,13 +79,13 @@ describe('conformance with the Obyte testnet ledger', () => {
       { params: { timeout: number } },
     ];
     tampered[1].params.timeout = 999;
-    expect(parseChannelDefinition(vectors.channel.address, tampered)).toMatchObject({
+    expect(parseAnyChannelDefinition(vectors.channel.address, tampered)).toMatchObject({
       ok: false,
       reason: 'invalid_channel_definition',
     });
     const otherBase = structuredClone(vectors.channel.definition) as [string, { base_aa: string }];
     otherBase[1].base_aa = 'X'.repeat(32);
-    expect(parseChannelDefinition(vectors.channel.address, otherBase).ok).toBe(false);
+    expect(parseAnyChannelDefinition(vectors.channel.address, otherBase).ok).toBe(false);
   });
 });
 
@@ -133,5 +162,42 @@ describe('signed packages', () => {
       ok: false,
       reason: 'invalid_signed_package_signer',
     });
+  });
+});
+
+describe('channel voucher packages (AA profile)', () => {
+  const key = testKey('client');
+  const testnet = OBYTE_NETWORKS.testnet;
+  const sign = (msg: unknown) => obyte.utils.signMessage(msg, { privateKey: key, testnet: true });
+  const message = { aa_address: 'X'.repeat(32), period: 1, amount_spent: 300000 };
+
+  it('accepts what obyte.js signs (version 4.0t, three keys)', () => {
+    const pkg = sign(message);
+    expect(Object.keys(pkg).sort()).toEqual(['authors', 'signed_message', 'version']);
+    expect(verifyVoucherPackage(pkg, { network: testnet })).toMatchObject({ ok: true });
+  });
+
+  /**
+   * A package re-signed with fields that the AA's is_valid_signed_package
+   * rejects: the signature is valid, so the loose profile accepts it, but the
+   * seller could never use such a voucher in a close or a fraud proof.
+   */
+  const resigned = (mutate: (p: any) => void) => {
+    const pkg: any = structuredClone(sign(message));
+    mutate(pkg);
+    delete pkg.authors[0].authentifiers;
+    const hash = getSignedPackageHashToSign(pkg);
+    pkg.authors[0].authentifiers = { r: signHash(hash, key) };
+    return pkg;
+  };
+
+  it.each([
+    ['a timestamp field', (p: any) => (p.timestamp = 0)],
+    ['a last_ball_unit', (p: any) => (p.last_ball_unit = 'A'.repeat(43) + '=')],
+    ['version 1.0t', (p: any) => (p.version = '1.0t')],
+  ])('refuses a validly signed package with %s', (_name, mutate) => {
+    const pkg = resigned(mutate);
+    expect(verifySignedPackage(pkg, { network: testnet }).ok).toBe(true); // loose profile
+    expect(verifyVoucherPackage(pkg, { network: testnet }).ok).toBe(false);
   });
 });

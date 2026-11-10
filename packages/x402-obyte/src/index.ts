@@ -74,11 +74,16 @@ export { startHeartbeat } from './hub/heartbeat.js';
 export {
   ClientChannelStore,
   type ClientChannel,
+  type CloseState,
+  type NewClientChannel,
   type PendingVoucher,
+  type Uncertainty,
 } from './batch/client-store.js';
 export {
   BatchObyteClient,
-  type BatchClientOptions,
+  type BatchObyteClientOptions,
+  type CloseResult,
+  type OnChainChannelState,
   MIN_DEPOSIT,
   TRIGGER_FEE,
   addressOfKey,
@@ -86,6 +91,8 @@ export {
   confirmClose,
   deposit,
   openChannel,
+  readChannelState,
+  recoverChannels,
 } from './batch/client.js';
 export {
   CoinReservations,

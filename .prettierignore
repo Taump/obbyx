@@ -16,3 +16,8 @@ docs/public/api/
 
 # The upstream x402 contribution is formatted with its own .prettierrc (pnpm upstream:check)
 upstream/
+
+# Original aa-channels-lib tests and their mocha bootstrap, kept in the library's own style
+aa/test/bootload.js
+aa/test/test_with_bytes.oscript.js
+aa/test/test_with_assets.oscript.js

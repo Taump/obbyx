@@ -3,7 +3,12 @@ import { ObbyxError, type ObyteNetwork, fromDisplay } from '@obbyx/obyte';
 import type { Logger } from '@obbyx/obyte/logger';
 import { loadWallet } from '@obbyx/obyte/wallet';
 import { BatchObyteClient, ClientChannelStore, ExactObyteClient } from '@obbyx/x402-obyte';
-import { PaymentPendingError, payingFetch } from '@obbyx/sdk';
+import {
+  PaymentOutcomeUnknownError,
+  PaymentPendingError,
+  payingFetch,
+  paymentOutcomeUnknown,
+} from '@obbyx/sdk';
 import { channelStorePath } from '../lib/channels.js';
 import {
   bytesArg,
@@ -95,11 +100,35 @@ export function payCommand({ out, err, done }: CommandContext): Cmd<PayArgs> {
           err(`HTTP ${result.response.status}`);
           if (result.payment) printPayment(err, network, result.payment);
           out(await result.response.text());
+          if (result.paymentHeader !== undefined && paymentOutcomeUnknown(result)) {
+            // 5xx, 409, no PAYMENT-RESPONSE...: the seller may have charged it.
+            err('The outcome of the payment is unknown. Retry the same request later with:');
+            err(`  --payment ${result.paymentHeader}`);
+            return done(3);
+          }
           return done(result.response.ok ? 0 : 2);
         } catch (e) {
           if (e instanceof PaymentPendingError) {
             err(`Payment ${e.transaction} is not final yet. Retry the same request later with:`);
             err(`  --payment ${e.paymentHeader}`);
+            return done(3);
+          }
+          if (e instanceof PaymentOutcomeUnknownError) {
+            err(`${e.message}. Retry the same request later with:`);
+            err(`  --payment ${e.paymentHeader}`);
+            return done(3);
+          }
+          if (e instanceof ObbyxError && e.code === 'payment_pending') {
+            // A channel voucher of an earlier request has an unknown outcome.
+            const retry = e.details?.['paymentHeader'];
+            err(e.message);
+            if (typeof retry === 'string') {
+              err('Retry that earlier request (same URL, method and body) with:');
+              err(`  --payment ${retry}`);
+            }
+            const aa = e.details?.['aa'];
+            if (typeof aa === 'string')
+              err(`Or close the channel (safe with a pending voucher): obbyx channel close ${aa}`);
             return done(3);
           }
           throw e;

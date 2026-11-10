@@ -16,11 +16,11 @@ import { addressOf, testKey, silentLogger } from '../../obyte/test/helpers.js';
 import { FakeHub } from '../../x402-obyte/test/fake-hub.js';
 import { type ChannelStack, hubClient, startChannelStack } from './channel-stack.js';
 import { ConsumedProofsStore } from '../src/seller/consumed-proofs.js';
-import { ObyteBatchServer } from '../src/seller/x402-server.js';
+import { BatchObyteServer } from '../src/seller/x402-server.js';
 
 /**
  * Contract test of AA channel payments with the OFFICIAL x402 packages on both
- * ends: @x402/fetch (BatchObyteClient) → @x402/express (ObyteBatchServer) →
+ * ends: @x402/fetch (BatchObyteClient) → @x402/express (BatchObyteServer) →
  * obbyx facilitator → the seller's watcher.
  */
 const NET = OBYTE_NETWORKS.testnet;
@@ -50,7 +50,7 @@ beforeEach(async () => {
     new HTTPFacilitatorClient({ url: stack.facilitatorUrl }),
   ).register(
     NET.caip2,
-    new ObyteBatchServer({
+    new BatchObyteServer({
       sellerId: 'api',
       secret: 's'.repeat(32),
       proofs: new ConsumedProofsStore(':memory:'),
@@ -109,6 +109,7 @@ const batchClient = () =>
     privateKey: clientKey,
     store: channels,
     logger: silent,
+    maxAmount: new Map([['base', 1_000n]]),
   });
 
 const officialClient = () =>
@@ -125,7 +126,7 @@ const post = (f: typeof fetch, q: string, headers: Record<string, string> = {}) 
     body: JSON.stringify({ q }),
   });
 
-describe('contract: @x402/fetch → @x402/express (ObyteBatchServer) → obbyx facilitator + watcher', () => {
+describe('contract: @x402/fetch → @x402/express (BatchObyteServer) → obbyx facilitator + watcher', () => {
   it('offers the channel terms with a per-request binding', async () => {
     const offer = await post(fetch, 'a');
     expect(offer.status).toBe(402);

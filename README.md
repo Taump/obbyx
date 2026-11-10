@@ -176,7 +176,7 @@ Requires **Node.js 24**.
 | Package                                                                | Install                             | For                                                                                         |
 | ---------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------- |
 | [`@obbyx/cli`](https://www.npmjs.com/package/@obbyx/cli)               | `npm i -g @obbyx/cli`               | the `obbyx` command: wallet, faucet, pay, channels                                          |
-| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `ObyteExactServer`, `ObyteBatchServer`) and buyers (`payingFetch`) |
+| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `ExactObyteServer`, `BatchObyteServer`) and buyers (`payingFetch`) |
 | [`@obbyx/x402-obyte`](https://www.npmjs.com/package/@obbyx/x402-obyte) | `npm i @obbyx/x402-obyte obyte`     | the Obyte mechanisms for the official `@x402/*` packages                                    |
 | [`@obbyx/obyte`](https://www.npmjs.com/package/@obbyx/obyte)           | installed with the above            | networks, amounts, validation, wallet, logger                                               |
 
@@ -412,13 +412,13 @@ mechanism, pointed at an obbyx facilitator:
 ```ts
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import { HTTPFacilitatorClient } from '@x402/core/http';
-import { ConsumedProofsStore, ObyteExactServer } from '@obbyx/sdk';
+import { ConsumedProofsStore, ExactObyteServer } from '@obbyx/sdk';
 
 const server = new x402ResourceServer(
   new HTTPFacilitatorClient({ url: 'http://127.0.0.1:4021' }),
 ).register(
   'obyte:testnet',
-  new ObyteExactServer({
+  new ExactObyteServer({
     sellerId: 'api',
     secret: SELLER_SECRET,
     proofs: new ConsumedProofsStore('proofs.db'),
@@ -443,7 +443,7 @@ app.use(
 ```
 
 For channel payments register `BatchObyteClient` (buyer, needs an open
-channel) and `ObyteBatchServer` (seller, needs the facilitator's
+channel) and `BatchObyteServer` (seller, needs the facilitator's
 batch-settlement and your watcher) the same way; a route may accept both
 schemes. Browser clients on another origin need CORS (`ObytePaywall({ cors })`,
 or the app's CORS middleware with `@x402/express`).

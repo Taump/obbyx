@@ -2,7 +2,7 @@ import obyte from 'obyte';
 import { getUnitHash } from 'obyte/lib/internal.js';
 import { afterAll, describe, expect, it } from 'vitest';
 import vectors from './fixtures/testnet-vectors.json' with { type: 'json' };
-import { parseChannelDefinition } from '../src/channel/definition.js';
+import { CHANNEL_BASE_AA, parseAnyChannelDefinition } from '../src/channel/definition.js';
 import { OBYTE_NETWORKS } from '../src/core/networks.js';
 
 /**
@@ -32,9 +32,17 @@ describe.runIf(process.env['OBBYX_LIVE_TESTNET'] === '1')(
       expect(res.joint_not_found).toBeDefined();
     }, 30_000);
 
+    it('the base AA v1.2 (CHANNEL_BASE_AA) is deployed on testnet and pays the wronged party', async () => {
+      const def = (await client.api.getDefinition(CHANNEL_BASE_AA)) as unknown[];
+      expect(def).not.toBeNull();
+      // An AA address is the chash of its definition: this is exactly our file.
+      expect(obyte.utils.getChash160(def)).toBe(CHANNEL_BASE_AA);
+      expect(JSON.stringify(def)).toContain('{$wronged_party}');
+    }, 30_000);
+
     it('light/get_definition + light/get_aa_state_vars of a real channel', async () => {
       const def = await client.api.getDefinition(vectors.channel.address);
-      expect(parseChannelDefinition(vectors.channel.address, def).ok).toBe(true);
+      expect(parseAnyChannelDefinition(vectors.channel.address, def).ok).toBe(true);
       const vars = (await client.api.getAaStateVars({
         address: vectors.channel.address,
       })) as Record<string, unknown>;

@@ -14,6 +14,8 @@ node apps/facilitator/dist/main.js               # one process per DB_PATH
 or with Docker Compose (facilitator + optional watcher):
 
 ```sh
+# once: the package key, outside the data volume (see Package key below)
+mkdir -p ~/.obbyx-facilitator && (umask 077; openssl rand -base64 32 > ~/.obbyx-facilitator/package.key)
 docker compose up -d facilitator
 docker compose --profile watcher up -d           # sellers with channels
 ```
@@ -109,12 +111,13 @@ store.
 
 ### Package key
 
-`PACKAGE_KEY_FILE` encrypts stored channel vouchers. It is created on first
-start (mode 0600). A different key makes every stored voucher unreadable: the
-facilitator fails closed with `package_corrupt` and channel payments stop. In
-this version the key cannot be rotated in place: keep the original file with
-the database, and replace both only after all watchers have acknowledged
-every voucher (no `pending` rows in `batch_commitments`).
+`PACKAGE_KEY_FILE` encrypts stored channel vouchers. Where to keep it, the
+startup checks and moving it out of the Docker data volume are described in
+[security](./security.md#where-to-keep-package-key-file). Docker Compose mounts
+it read-only as a secret from `~/.obbyx-facilitator/package.key` (override with
+`OBBYX_FACILITATOR_KEY`). The key cannot be rotated in place: replace it only
+after all watchers have acknowledged every voucher (no `pending` rows in
+`batch_commitments`).
 
 ## Moving to mainnet
 
@@ -123,6 +126,9 @@ every voucher (no `pending` rows in `batch_commitments`).
    payment is pending.
 2. Set `NETWORKS=obyte:livenet` (or both), `ASSETS_LIVENET`, and a livenet
    hub if you do not use the public one.
+   Channels (`batch-settlement`) need the base AA v1.2 deployed on mainnet
+   first: until then the facilitator does not offer or accept them on
+   `obyte:livenet` (it logs why at startup), and only `exact` works there.
 3. Set `FACILITATOR_API_KEYS`, put the facilitator behind TLS, keep
    `HOST=127.0.0.1` behind the proxy.
 4. Create **new** wallets for livenet (`obbyx init --network livenet`); fund

@@ -5,25 +5,35 @@ import { silentLogger } from '../../../packages/obyte/test/helpers.js';
 
 const silent = silentLogger();
 
-/** Mimics obyte.js: subscriptions are dropped on every (re)connection. */
-function fakeClient() {
-  let subscribers: ((err: unknown, msg: unknown) => void)[] = [];
+type Sub = (err: unknown, msg: unknown) => void;
+
+/**
+ * Mimics obyte.js. `dropsOnReconnect`: 0.2.1 empties its subscriber list
+ * (`client.client.notifications`) on every (re)connection; other versions keep
+ * every handler forever. `exposesList: false` hides the internal list.
+ */
+function fakeClient(opts: { dropsOnReconnect: boolean; exposesList?: boolean }) {
+  const ws = { notifications: [] as Sub[] };
   const justsayings: [string, unknown][] = [];
   return {
     justsayings,
-    reconnect: () => (subscribers = []),
+    subscribers: () => ws.notifications,
+    reconnect: () => {
+      if (opts.dropsOnReconnect) ws.notifications = [];
+    },
     push: (subject: string, body: unknown) =>
-      subscribers.forEach((s) => s(null, ['justsaying', { subject, body }])),
+      ws.notifications.forEach((s) => s(null, ['justsaying', { subject, body }])),
     client: {
+      ...(opts.exposesList === false ? {} : { client: ws }),
       justsaying: (subject: string, body: unknown) => justsayings.push([subject, body]),
-      subscribe: (cb: (err: unknown, msg: unknown) => void) => subscribers.push(cb),
+      subscribe: (cb: Sub) => ws.notifications.push(cb),
     },
   };
 }
 
 describe('watcher bootstrap (per connection)', () => {
   it('watches the seller and channels, reacts to AA responses, and re-subscribes after reconnect', async () => {
-    const fake = fakeClient();
+    const fake = fakeClient({ dropsOnReconnect: true });
     const defended: string[] = [];
     let ticks = 0;
     let balances = 0;
@@ -59,5 +69,33 @@ describe('watcher bootstrap (per connection)', () => {
     expect(fake.justsayings.filter(([s]) => s === 'light/new_aa_to_watch')).toHaveLength(4);
     expect(ticks).toBe(2);
     expect(balances).toBe(2);
+    expect(fake.subscribers()).toHaveLength(1);
+  });
+
+  it.each([
+    ['keeps handlers across reconnections', { dropsOnReconnect: false }],
+    ['has no inspectable subscriber list', { dropsOnReconnect: false, exposesList: false }],
+  ])('subscribes once when the client %s (no duplicate handlers)', async (_n, opts) => {
+    const fake = fakeClient(opts);
+    const defended: string[] = [];
+    const bootstrap = createBootstrap({
+      client: fake.client as never,
+      store: { channels: async () => [{ aa: 'AA1' }] } as unknown as WatcherStore,
+      defender: {
+        tick: async () => undefined,
+        defendNow: async (aa: string) => void defended.push(aa),
+      },
+      seller: 'SELLER',
+      refreshBalance: async () => 0,
+      logger: silent,
+    });
+    await bootstrap();
+    fake.reconnect();
+    await bootstrap();
+    fake.reconnect();
+    await bootstrap();
+    expect(fake.subscribers()).toHaveLength(1);
+    fake.push('light/aa_response', { aa_address: 'AA1' });
+    expect(defended).toEqual(['AA1']);
   });
 });

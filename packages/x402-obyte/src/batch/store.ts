@@ -37,7 +37,8 @@ export interface CommitmentOwner {
   readonly packageHash: string;
 }
 
-export interface CommitmentRow {
+/** A journal entry without its package: all that the checks and answers need. */
+export interface CommitmentMeta {
   readonly seq: number;
   readonly channelKey: string;
   readonly network: string;
@@ -48,8 +49,12 @@ export interface CommitmentRow {
   readonly paymentAmount: bigint;
   readonly binding: string;
   readonly packageHash: string;
-  readonly packageJson: string;
   readonly state: CommitmentState;
+}
+
+export interface CommitmentRow extends CommitmentMeta {
+  /** The signed package (decrypted on read by stores that encrypt it). */
+  readonly packageJson: string;
 }
 
 export type AppendResult =
@@ -79,6 +84,8 @@ export interface AppendInput {
 export interface BatchStore {
   channel(key: string): Promise<ChannelRow | undefined>;
   commitmentByHash(packageHash: string): Promise<CommitmentRow | undefined>;
+  /** The entry of a package without the package itself (no decryption, no `package_read` event). */
+  commitmentMeta(packageHash: string): Promise<CommitmentMeta | undefined>;
   commitment(seq: number): Promise<CommitmentRow | undefined>;
   journal(payTo: string, cursor: number, limit?: number): Promise<CommitmentRow[]>;
   /**
@@ -96,12 +103,12 @@ export interface BatchStore {
    * never commit another seller's voucher, nor one it did not sign for.
    * Returns undefined if not owned; a cancelled entry is returned unchanged.
    */
-  commit(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined>;
+  commit(seq: number, owner: CommitmentOwner): Promise<CommitmentMeta | undefined>;
   /**
    * pending → cancelled (idempotent); releases the channel. Same ownership
    * rule as commit. A committed entry is returned unchanged (never undone).
    */
-  cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentRow | undefined>;
+  cancel(seq: number, owner: CommitmentOwner): Promise<CommitmentMeta | undefined>;
 }
 
 /** The entry belongs to `owner` (seller, network and the exact package). */
@@ -196,6 +203,13 @@ export class SqliteBatchStore implements BatchStore {
       .prepare('SELECT * FROM batch_commitments WHERE package_hash = ?')
       .get(packageHash) as CommitmentDbRow | undefined;
     return row === undefined ? undefined : toCommitment(row);
+  }
+
+  async commitmentMeta(packageHash: string): Promise<CommitmentMeta | undefined> {
+    const row = this.db
+      .prepare('SELECT * FROM batch_commitments WHERE package_hash = ?')
+      .get(packageHash) as CommitmentDbRow | undefined;
+    return row === undefined ? undefined : toMeta(row);
   }
 
   async commitment(seq: number): Promise<CommitmentRow | undefined> {
@@ -380,6 +394,10 @@ function toChannel(r: ChannelDbRow): ChannelRow {
 }
 
 function toCommitment(r: CommitmentDbRow): CommitmentRow {
+  return { ...toMeta(r), packageJson: r.package_json };
+}
+
+function toMeta(r: CommitmentDbRow): CommitmentMeta {
   return {
     seq: r.seq,
     channelKey: r.channel_key,
@@ -391,7 +409,6 @@ function toCommitment(r: CommitmentDbRow): CommitmentRow {
     paymentAmount: BigInt(r.payment_amount),
     binding: r.binding,
     packageHash: r.package_hash,
-    packageJson: r.package_json,
     state: r.state,
   };
 }

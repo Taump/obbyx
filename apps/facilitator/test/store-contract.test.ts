@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { chmodSync, mkdtempSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
+import { createLogger } from '@obbyx/obyte/logger';
 import {
   type AppendInput,
   type BatchStore,
@@ -210,6 +212,16 @@ describe.each(IMPLS)('BatchStore contract — $name', (impl) => {
     expect(await batch.journal('S'.repeat(32), journal[0]!.seq)).toHaveLength(1);
     expect((await batch.commitmentByHash('p2'))?.amountSpent).toBe(100n);
   });
+
+  it('commitmentMeta: the entry of a package without its body', async () => {
+    const { batch } = await impl.make();
+    const a = await batch.appendPending(voucher(100n, 'm1'));
+    if (!a.ok) throw new Error('append failed');
+    const meta = await batch.commitmentMeta('m1');
+    expect(meta).toMatchObject({ seq: a.commitment.seq, amountSpent: 100n, state: 'pending' });
+    expect(meta).not.toHaveProperty('packageJson');
+    expect(await batch.commitmentMeta('nope')).toBeUndefined();
+  });
 });
 
 describe('Prisma database', () => {
@@ -254,6 +266,68 @@ describe('channel packages at rest (Prisma store)', () => {
     expect(reads.every((e) => !(e.data ?? '').includes(input.packageJson))).toBe(true);
   });
 
+  it('metadata lookups, commit and cancel decrypt nothing and journal no read', async () => {
+    const prisma = await openDatabase(
+      migratedSqliteFile(new URL('../prisma/migrations/', import.meta.url), 'facilitator.db'),
+    );
+    cleanups.push(() => prisma.$disconnect());
+    // A key that cannot decrypt the packages: any decryption would throw.
+    const batch = new PrismaBatchStore(prisma, PackageCipher.fromKey(randomBytes(32)));
+    const blind = new PrismaBatchStore(prisma, PackageCipher.fromKey(randomBytes(32)));
+    const a = await batch.appendPending(voucher(100n, 'r1'));
+    if (!a.ok) throw new Error('append failed');
+    expect((await blind.commitmentMeta('r1'))?.state).toBe('pending');
+    expect(await blind.commit(a.commitment.seq, owner('r1'))).toMatchObject({ state: 'committed' });
+    const b = await batch.appendPending(voucher(200n, 'r2'));
+    if (!b.ok) throw new Error('append failed');
+    expect(await blind.cancel(b.commitment.seq, owner('r2'))).toMatchObject({ state: 'cancelled' });
+    expect(await prisma.event.count({ where: { kind: 'package_read' } })).toBe(0);
+  });
+
+  it('replay skips a damaged package (logged, journaled) and delivers the rest', async () => {
+    const prisma = await openDatabase(
+      migratedSqliteFile(new URL('../prisma/migrations/', import.meta.url), 'facilitator.db'),
+    );
+    cleanups.push(() => prisma.$disconnect());
+    const logged: string[] = [];
+    const logger = createLogger({
+      destination: new Writable({
+        write: (chunk, _e, cb) => (logged.push(String(chunk)), cb()),
+      }),
+    });
+    const batch = new PrismaBatchStore(
+      prisma,
+      PackageCipher.fromKey(randomBytes(32)),
+      undefined,
+      logger,
+    );
+    const seqs: number[] = [];
+    for (const [i, hash] of ['d1', 'd2', 'd3'].entries()) {
+      const r = await batch.appendPending({
+        ...voucher(100n, hash),
+        channelKey: `obyte:testnet:aa:X${i}`,
+      });
+      if (!r.ok) throw new Error('append failed');
+      seqs.push(r.commitment.seq);
+    }
+    await prisma.batchCommitment.update({
+      where: { seq: seqs[1]! },
+      data: { packageJson: 'garbage' },
+    });
+    const seller = 'S'.repeat(32);
+    expect((await batch.pending(seller)).map((c) => c.seq)).toEqual([seqs[0], seqs[2]]);
+    expect((await batch.journal(seller, 0)).map((c) => c.seq)).toEqual([seqs[0], seqs[2]]);
+    const damaged = await prisma.event.findMany({ where: { kind: 'package_unreadable' } });
+    expect(damaged.map((e) => JSON.parse(e.data ?? '{}'))).toMatchObject([
+      { op: 'pending_replay', seq: seqs[1] },
+      { op: 'journal', seq: seqs[1] },
+    ]);
+    expect(await prisma.event.count({ where: { kind: 'package_read' } })).toBe(4);
+    expect(logged.filter((l) => l.includes('cannot be decrypted'))).toHaveLength(2);
+    // a single read of the damaged package still fails closed
+    await expect(batch.commitment(seqs[1]!)).rejects.toThrow(/not encrypted/);
+  });
+
   it('a different key cannot read them (fail closed)', async () => {
     const file = migratedSqliteFile(
       new URL('../prisma/migrations/', import.meta.url),
@@ -283,11 +357,58 @@ describe('PackageCipher', () => {
   it('creates the key file with mode 0600 and refuses a group-readable one', () => {
     const dir = mkdtempSync(join(tmpdir(), 'obbyx-key-'));
     const path = join(dir, 'package.key');
-    const a = PackageCipher.fromFile(path);
+    const a = PackageCipher.fromFile(path, { create: true });
     expect(statSync(path).mode & 0o777).toBe(0o600);
-    const b = PackageCipher.fromFile(path); // same key on restart
+    const b = PackageCipher.fromFile(path, { create: false }); // same key on restart
     expect(b.decrypt(a.encrypt('x', 'h'), 'h')).toBe('x');
     chmodSync(path, 0o644);
-    expect(() => PackageCipher.fromFile(path)).toThrow(/chmod 600/);
+    expect(() => PackageCipher.fromFile(path, { create: false })).toThrow(/chmod 600/);
+  });
+
+  it('startup never creates a key for a database with packages and refuses a wrong key', async () => {
+    const prisma = await openDatabase(
+      migratedSqliteFile(new URL('../prisma/migrations/', import.meta.url), 'facilitator.db'),
+    );
+    cleanups.push(() => prisma.$disconnect());
+    const dir = mkdtempSync(join(tmpdir(), 'obbyx-key-'));
+    const path = join(dir, 'package.key');
+    const store = await PrismaBatchStore.open(prisma, path); // empty DB: creates the key
+    const a = await store.appendPending(voucher(100n, 'd1'));
+    if (!a.ok) throw new Error('append failed');
+    await store.commit(a.commitment.seq, owner('d1'));
+    const b = await store.appendPending(voucher(200n, 'd2'));
+    if (!b.ok) throw new Error('append failed');
+    await PrismaBatchStore.open(prisma, path); // restart with the same key
+
+    // One damaged newest package does not look like a wrong key.
+    await prisma.batchCommitment.update({
+      where: { seq: b.commitment.seq },
+      data: { packageJson: 'garbage' },
+    });
+    await PrismaBatchStore.open(prisma, path);
+
+    // The key file went missing (e.g. a new mount): refuse instead of generating one.
+    rmSync(path);
+    await expect(PrismaBatchStore.open(prisma, path)).rejects.toThrow(
+      /already holds encrypted channel packages/,
+    );
+    expect(existsSync(path)).toBe(false);
+
+    // A different key at that path is refused.
+    PackageCipher.fromFile(path, { create: true });
+    await expect(PrismaBatchStore.open(prisma, path)).rejects.toThrow(/not the key/);
+  });
+
+  it('a key that cannot be created (read-only mount) fails with a clear message', () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const dir = mkdtempSync(join(tmpdir(), 'obbyx-key-'));
+    chmodSync(dir, 0o500);
+    try {
+      expect(() => PackageCipher.fromFile(join(dir, 'package.key'), { create: true })).toThrow(
+        /Cannot create PACKAGE_KEY_FILE/,
+      );
+    } finally {
+      chmodSync(dir, 0o700);
+    }
   });
 });

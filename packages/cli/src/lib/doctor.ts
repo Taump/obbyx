@@ -106,13 +106,19 @@ function checkLocalState(network: ObyteNetwork, report: Report): void {
     const list = channels.list().filter((c) => c.network === network.caip2);
     channels.close();
     const pending = list.filter((c) => c.pending !== null);
+    const legacy = list.filter((c) => c.legacy && c.lastClose === null);
+    const notes = [
+      pending.length
+        ? `${pending.length} with a voucher of unknown outcome (see \`obbyx channel status <aa>\` for the --payment header to retry that request, or close the channel: that is safe)`
+        : '',
+      legacy.length
+        ? `${legacy.length} on a retired base AA (no longer paid into; close with \`obbyx channel close <aa>\`)`
+        : '',
+    ].filter((n) => n !== '');
     report(
-      pending.length === 0 ? 'ok' : 'warn',
+      notes.length === 0 ? 'ok' : 'warn',
       'channels',
-      `${list.length} channel(s)` +
-        (pending.length
-          ? `, ${pending.length} with a voucher of unknown outcome (retry that request with --payment)`
-          : ''),
+      `${list.length} channel(s)` + (notes.length ? `, ${notes.join('; ')}` : ''),
     );
   }
 }

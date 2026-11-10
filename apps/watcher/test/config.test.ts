@@ -24,3 +24,14 @@ describe('watcher FACILITATOR_ALLOW_HTTP', () => {
     );
   });
 });
+
+describe('watcher MIN_CHANNEL_TIMEOUT_SECONDS', () => {
+  it('cannot be set below one hour (too little time to answer a dishonest close)', () => {
+    const parse = (v?: string) =>
+      watcherEnvSchema.safeParse(v === undefined ? {} : { MIN_CHANNEL_TIMEOUT_SECONDS: v });
+    expect(parse().data?.MIN_CHANNEL_TIMEOUT_SECONDS).toBe(3600);
+    expect(parse('3599').success).toBe(false);
+    expect(parse('60').success).toBe(false);
+    expect(parse('7200').data?.MIN_CHANNEL_TIMEOUT_SECONDS).toBe(7200);
+  });
+});

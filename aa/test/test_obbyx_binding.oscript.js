@@ -5,9 +5,11 @@
 //     `payment_amount`) and still be accepted by the AA as `sentByPeer`
 //     when the seller (party A) closes the channel; payouts follow
 //     `amount_spent` (unidirectional channel: only B deposits and pays).
-//  2. Trust-model risk (ADR-0001): while a close initiated by the client is
-//     pending, ANY third party holding a higher client-signed package can
-//     submit a fraud proof and receives the whole channel balance.
+//  2. Fraud proof payout (base AA v1.2): while a close initiated by the client
+//     is pending, a third party holding a higher client-signed package can
+//     submit the fraud proof, but the whole balance goes to the seller (the
+//     wronged party), not to the submitter. In v1.1 it went to the submitter,
+//     see test_fraud_proof_payout.oscript.js.
 
 const path = require('path');
 const { expect } = require('chai');
@@ -33,7 +35,7 @@ describe('obbyx: base channel AA with extra fields in signed packages', function
 
   before(async () => {
     this.network = await Network.create()
-      .with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.1.oscript') })
+      .with.agent({ base_aa: path.join(__dirname, '../channels_base_aa_1.2.oscript') })
       .with.wallet({ seller: 1e9 }) // party A (payTo)
       .with.wallet({ client: 10e9 }) // party B (payer)
       .with.wallet({ stranger: 1e9 }) // unrelated third party (e.g. a facilitator)
@@ -133,7 +135,7 @@ describe('obbyx: base channel AA with extra fields in signed packages', function
     expect(res.bounced).to.be.true;
   });
 
-  it('2. (ADR-0001 risk) a third party with a higher client package takes the whole balance during a client-initiated close', async () => {
+  it('2. a third party with a higher client package proves the fraud, the seller gets the whole balance', async () => {
     const period = (await this.network.deployer.readAAStateVars(this.aa)).vars.period;
     const before = (await this.network.deployer.readAAStateVars(this.aa)).vars;
     const total = before.balanceB + (before.balanceA || 0);
@@ -158,11 +160,11 @@ describe('obbyx: base channel AA with extra fields in signed packages', function
 
     const { unitObj } = await this.network.deployer.getUnitInfo({ unit: proof.response_unit });
     const payments = Utils.getExternalPayments(unitObj);
-    const toStranger = payments.find((p) => p.address === this.stranger);
-    expect(toStranger, 'payout goes to trigger.address').to.exist;
-    // Whole balance minus AA fees goes to the stranger, nothing to the seller.
-    expect(toStranger.amount).to.be.above(total - 20000);
-    expect(payments.find((p) => p.address === this.seller)).to.be.undefined;
+    const toSeller = payments.find((p) => p.address === this.seller);
+    expect(toSeller, 'payout goes to the wronged party').to.exist;
+    // Whole balance minus AA fees goes to the seller, nothing to the submitter.
+    expect(toSeller.amount).to.be.above(total - 20000);
+    expect(payments.find((p) => p.address === this.stranger)).to.be.undefined;
   });
 
   after(async () => {

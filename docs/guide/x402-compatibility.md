@@ -16,7 +16,7 @@ Contract tests run the official packages against obbyx on every CI run
 | `EXTENSION-RESPONSES` header              | yes          | facilitator → resource server; reports `bazaar` cataloging `success` / `rejected`      |
 | `payment-identifier`                      | yes          | in `ObytePaywall` (seller side) and `payingFetch` (client side)                        |
 | Official `@x402/fetch` client             | yes          | register `ExactObyteClient` and/or `BatchObyteClient`; set spend controls for GBYTE    |
-| Official `@x402/express` seller           | yes          | register `ObyteExactServer` and/or `ObyteBatchServer`; see the limitation below        |
+| Official `@x402/express` seller           | yes          | register `ExactObyteServer` and/or `BatchObyteServer`; see the limitation below        |
 | Browser clients (CORS)                    | yes          | `ObytePaywall({ cors })` + `paywall.preflight()`; with `@x402/express`, the app's CORS |
 
 ## Official client (`@x402/fetch`)
@@ -61,11 +61,11 @@ npm i @x402/express @x402/core @obbyx/sdk
 ```ts
 import { paymentMiddleware, x402ResourceServer } from '@x402/express';
 import { HTTPFacilitatorClient } from '@x402/core/http';
-import { ObyteExactServer, ConsumedProofsStore } from '@obbyx/sdk';
+import { ExactObyteServer, ConsumedProofsStore } from '@obbyx/sdk';
 
 const server = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL })).register(
   'obyte:testnet',
-  new ObyteExactServer({
+  new ExactObyteServer({
     sellerId: 'api',
     secret: SELLER_SECRET,
     proofs: new ConsumedProofsStore('proofs.db'),
@@ -87,22 +87,22 @@ app.use(
 `price` is either `{ asset, amount }` (smallest units) or a string `"<n> bytes"` /
 `"<x> GBYTE"`. Obyte has no USD default asset, so `"$0.01"` is rejected.
 
-`ObyteExactServer` adds the per-request binding (an HMAC over the method, URL,
+`ExactObyteServer` adds the per-request binding (an HMAC over the method, URL,
 body and price) to every offer, so a payment for one request cannot pay for
 another, and it records each proof so it is used for one operation only.
 
 ### Channel payments (`batch-settlement`)
 
-Register `ObyteBatchServer` next to (or instead of) `ObyteExactServer`. The
+Register `BatchObyteServer` next to (or instead of) `ExactObyteServer`. The
 facilitator must run with batch-settlement and your watcher connected;
 `minChannelTimeoutSeconds` must match its `MIN_CHANNEL_TIMEOUT_SECONDS`.
 
 ```ts
-import { ObyteBatchServer } from '@obbyx/sdk';
+import { BatchObyteServer } from '@obbyx/sdk';
 
 server.register(
   'obyte:testnet',
-  new ObyteBatchServer({
+  new BatchObyteServer({
     sellerId: 'api',
     secret: SELLER_SECRET,
     proofs,

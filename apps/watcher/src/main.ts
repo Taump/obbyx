@@ -56,6 +56,15 @@ async function main(): Promise<void> {
 
   if (env.DB_PATH !== ':memory:') mkdirSync(dirname(env.DB_PATH), { recursive: true });
   const store = new WatcherStore(await openWatcherDatabase(env.DB_PATH));
+  // Vouchers stored before the AA-profile check are checked once; an invalid
+  // one is never carried by a close / fraud proof.
+  const invalid = await store.verifyStoredVouchers();
+  if (invalid.length > 0) {
+    log.error(
+      { invalid },
+      'ALERT: stored vouchers the channel AA would reject; they are skipped (earned amounts may be lost)',
+    );
+  }
   const client = new obyte.Client(env.HUB_URL ?? network.defaultHubUrl, {
     testnet: network.testnet,
     reconnect: true,
@@ -91,6 +100,9 @@ async function main(): Promise<void> {
     hubTimeoutMs: env.HUB_TIMEOUT_MS,
     bytesBalance: refreshBalance,
     onNewChannel: (aa) => watchChannel(client, aa),
+    // `defender` is created below; this runs only later, for a stored voucher.
+    onClosingVoucher: (aa) => void defender.defendNow(aa),
+    minChannelTimeout: env.MIN_CHANNEL_TIMEOUT_SECONDS,
   });
   const defender = new Defender({
     client,
@@ -100,7 +112,7 @@ async function main(): Promise<void> {
     testnet: network.testnet,
     policy: { closeAtAmount: env.CLOSE_AT_AMOUNT, closeAfterSeconds: env.CLOSE_AFTER_SECONDS },
     hubTimeoutMs: env.HUB_TIMEOUT_MS,
-    // `link` is created below; announce runs only later, from a defence pass.
+    // `link` is created above; announce runs only later, from a defence pass.
     announce: () => link.announce(),
   });
 
@@ -147,4 +159,16 @@ async function main(): Promise<void> {
   );
 }
 
-void main();
+// A failure while starting (database, hub, first bootstrap) must not leave a
+// half-initialised process running: exit so the supervisor restarts it.
+main().catch((err: unknown) => {
+  try {
+    moduleLogger(createLoggerFromEnv('obbyx-watcher'), 'watcher.main').fatal(
+      { err },
+      'watcher failed to start',
+    );
+  } catch {
+    process.stderr.write(`watcher failed to start: ${String(err)}\n`);
+  }
+  process.exit(1);
+});

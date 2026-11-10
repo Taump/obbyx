@@ -9,9 +9,12 @@ interface ChannelArgs {
   deposit?: string;
   amount?: string;
   window?: string;
+  declare?: string;
+  force?: boolean;
+  resend?: boolean;
 }
 
-/** `obbyx channel <open|list|status|deposit|close|confirm>`. */
+/** `obbyx channel <open|list|status|deposit|close|confirm|recover>`. */
 export function channelCommands({ out, done }: CommandContext): Cmd<ChannelArgs>[] {
   const channelRun =
     (sub: string) =>
@@ -29,6 +32,9 @@ export function channelCommands({ out, done }: CommandContext): Cmd<ChannelArgs>
               ...(a.deposit === undefined ? {} : { deposit: a.deposit }),
               ...(a.amount === undefined ? {} : { amount: a.amount }),
               ...(a.window === undefined ? {} : { timeout: a.window }),
+              ...(a.declare === undefined ? {} : { declare: a.declare }),
+              ...(a.force === undefined ? {} : { force: a.force }),
+              ...(a.resend === undefined ? {} : { resend: a.resend }),
             },
             {
               network,
@@ -82,15 +88,48 @@ export function channelCommands({ out, done }: CommandContext): Cmd<ChannelArgs>
     },
     {
       command: 'close <target>',
-      describe: 'Start closing a channel (the dispute window begins)',
-      builder: (y) => aaArg(y),
+      describe:
+        'Start closing a channel (the dispute window begins). Declares the highest amount you ever ' +
+        'signed in the current on-chain period (a pending voucher included) and stops paying from it. ' +
+        'If the seller already started a close, it tells you to confirm instead.',
+      builder: (y) =>
+        aaArg(y)
+          .option('declare', {
+            type: 'string',
+            describe:
+              'Declare this amount spent, GBYTE (never below what you are known to have signed). ' +
+              'Required, or --force, for a channel recorded by obbyx 0.1.5 or earlier (it may have ' +
+              'lost track of vouchers it signed) or found by `channel recover`: declaring ' +
+              'less than any voucher lets the seller take the whole deposit. On a repeated close it ' +
+              'can only raise an earlier declaration that was sent',
+          })
+          .option('force', {
+            type: 'boolean',
+            describe:
+              'For such a channel: declare the highest KNOWN amount anyway (only if you are sure no ' +
+              'larger voucher was signed)',
+          })
+          .option('resend', {
+            type: 'boolean',
+            describe:
+              'Send again a close that was sent earlier but never appeared on-chain (not needed when ' +
+              'the hub rejected it or it was never sent)',
+          }),
       handler: channelRun('close'),
     },
     {
       command: 'confirm <target>',
-      describe: 'Finish closing after the dispute window and get the rest back',
+      describe:
+        'Finish closing and get the rest back: at once when the seller started the close, after the dispute window when you did',
       builder: (y) => aaArg(y),
       handler: channelRun('confirm'),
+    },
+    {
+      command: 'recover',
+      describe:
+        'Find channels you opened that are missing from the local database (e.g. after a crash) and record them. ' +
+        'What was signed on them is unknown, so closing one needs --declare or --force',
+      handler: channelRun('recover'),
     },
   ];
 }

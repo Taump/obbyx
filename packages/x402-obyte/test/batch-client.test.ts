@@ -152,8 +152,8 @@ describe('ClientChannelStore migration', () => {
       .run();
     old.close();
     const migrated = new ClientChannelStore(path);
-    expect(migrated.get(AA)?.maxSigned).toBe(900n);
-    expect(migrated.get('B')?.maxSigned).toBe(50n);
+    expect(migrated.get(AA)).toMatchObject({ maxSigned: 900n, uncertainty: 'migrated' });
+    expect(migrated.get('B')).toMatchObject({ maxSigned: 50n, uncertainty: 'migrated' });
     migrated.close();
     rmSync(dir, { recursive: true });
   });
