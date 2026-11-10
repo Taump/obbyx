@@ -11,19 +11,20 @@ in GBYTE or Obyte assets using the [x402](https://x402.org) protocol, and let
 agents and services pay for them within explicit limits.
 
 - **Non-custodial:** funds go from the buyer directly to the seller; the facilitator never holds money and signs nothing.
-- **Two schemes:** `exact` (one on-chain Obyte unit per request) and `batch-settlement` (instant, fee-free per call over AA payment channels).
+- **Two schemes:** `batch-settlement` (instant, fee-free per call over AA payment channels) and `exact` (one on-chain Obyte unit per request).
 - **Standard x402:** v2 (and v1 for `exact`), Bazaar discovery, `payment-identifier`, `EXTENSION-RESPONSES`; the official `@x402/fetch` and `@x402/express` work unchanged.
 - **One payment, one operation:** every offer is bound to the request; a payment is broadcast once, served once, never charged twice.
 
-> Status: testnet-ready, not yet run on mainnet. Read
-> [Security and trust](docs/guide/security.md) before using payment channels.
+> Status: testnet-ready, not yet run on mainnet. Payment channels work on
+> **testnet only** for now (the channel base AA v1.2 is not yet deployed on
+> mainnet). Read [Security and trust](docs/guide/security.md) before using
+> payment channels.
 
 ## Contents
 
 - [How it works](#how-it-works)
 - [Install](#install)
 - [Quickstart on testnet](#quickstart-on-testnet)
-- [Payment channels](#payment-channels)
 - [Playground](#playground)
 - [Selling an API (SDK)](#selling-an-api-sdk)
 - [Paying for APIs (SDK)](#paying-for-apis-sdk)
@@ -64,33 +65,6 @@ Every offer carries a **binding**: an HMAC of the seller over the request
 the payment, so a payment can pay for that one operation only. A repeated
 request with the same payment returns the stored response; a pending payment
 is retried with the same payment, never a new one.
-
-### `exact`: one on-chain payment per request
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as Buyer
-    participant S as Seller
-    participant F as Facilitator
-    participant O as Obyte
-    B->>B: compose + sign a unit: output to payTo,<br/>data {x402: {binding, quoteId}} (NOT broadcast)
-    B->>S: PAYMENT-SIGNATURE {unit}
-    S->>F: /settle
-    F->>F: profile, hashes, signature, amount, binding (local)
-    F->>O: inputs exist / unspent, last ball (hub)
-    F->>O: post_joint (once per unit)
-    loop until final
-        F->>O: stable? (proof chain)
-        F-->>S: settlement_pending + unit hash
-    end
-    F-->>S: success (unit hash)
-```
-
-The facilitator's state per unit: `claimed → broadcasting → accepted →
-stable_good` (or `final_bad` on a double spend, `rejected`, `expired`). Every
-transition is a compare-and-set, so a unit is broadcast at most once even
-under concurrent requests.
 
 ### `batch-settlement`: payment channels ("batching")
 
@@ -142,15 +116,42 @@ Why it is safe:
 The channel's dispute window (`--window`) must be longer than the seller's
 watcher can be offline. Trust model: [Security and trust](docs/guide/security.md).
 
+### `exact`: one on-chain payment per request
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Buyer
+    participant S as Seller
+    participant F as Facilitator
+    participant O as Obyte
+    B->>B: compose + sign a unit: output to payTo,<br/>data {x402: {binding, quoteId}} (NOT broadcast)
+    B->>S: PAYMENT-SIGNATURE {unit}
+    S->>F: /settle
+    F->>F: profile, hashes, signature, amount, binding (local)
+    F->>O: inputs exist / unspent, last ball (hub)
+    F->>O: post_joint (once per unit)
+    loop until final
+        F->>O: stable? (proof chain)
+        F-->>S: settlement_pending + unit hash
+    end
+    F-->>S: success (unit hash)
+```
+
+The facilitator's state per unit: `claimed → broadcasting → accepted →
+stable_good` (or `final_bad` on a double spend, `rejected`, `expired`). Every
+transition is a compare-and-set, so a unit is broadcast at most once even
+under concurrent requests.
+
 ### Which scheme
 
-|             | `exact`                                                                                           | `batch-settlement` (channels)          |
-| ----------- | ------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Per request | one unit signed by the buyer, broadcast by the facilitator                                        | one signed voucher, nothing on-chain   |
-| Speed       | until final: minutes under load, up to ~2 h on a quiet network (instant with `FINALITY=accepted`) | instant (the seller's watcher acks)    |
-| Fees        | network fee per request                                                                           | one deposit, one close                 |
-| Seller runs | the paywall                                                                                       | the paywall + a **watcher**            |
-| Buyer needs | bytes in the wallet                                                                               | an open, funded channel to this seller |
+|             | `batch-settlement` (channels)          | `exact`                                                                                           |
+| ----------- | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Per request | one signed voucher, nothing on-chain   | one unit signed by the buyer, broadcast by the facilitator                                        |
+| Speed       | instant (the seller's watcher acks)    | until final: minutes under load, up to ~2 h on a quiet network (instant with `FINALITY=accepted`) |
+| Fees        | one deposit, one close                 | network fee per request                                                                           |
+| Seller runs | the paywall + a **watcher**            | the paywall                                                                                       |
+| Buyer needs | an open, funded channel to this seller | bytes in the wallet                                                                               |
 
 `payingFetch` / `obbyx pay` use a channel when one is open to the seller and
 fall back to `exact` otherwise.
@@ -176,7 +177,7 @@ Requires **Node.js 24**.
 | Package                                                                | Install                             | For                                                                                         |
 | ---------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------- |
 | [`@obbyx/cli`](https://www.npmjs.com/package/@obbyx/cli)               | `npm i -g @obbyx/cli`               | the `obbyx` command: wallet, faucet, pay, channels                                          |
-| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `ExactObyteServer`, `BatchObyteServer`) and buyers (`payingFetch`) |
+| [`@obbyx/sdk`](https://www.npmjs.com/package/@obbyx/sdk)               | `npm i @obbyx/sdk @x402/core obyte` | sellers (`ObytePaywall`, `BatchObyteServer`, `ExactObyteServer`) and buyers (`payingFetch`) |
 | [`@obbyx/x402-obyte`](https://www.npmjs.com/package/@obbyx/x402-obyte) | `npm i @obbyx/x402-obyte obyte`     | the Obyte mechanisms for the official `@x402/*` packages                                    |
 | [`@obbyx/obyte`](https://www.npmjs.com/package/@obbyx/obyte)           | installed with the above            | networks, amounts, validation, wallet, logger                                               |
 
@@ -210,37 +211,77 @@ OBBYX_HOME=~/.obbyx-seller obbyx init        # seller: a second wallet
 OBBYX_HOME=~/.obbyx-seller obbyx address     # → the seller address (PAY_TO below)
 ```
 
-### 2. Testnet bytes for the buyer
+### 2. Testnet bytes
 
 ```sh
-obbyx faucet       # asks the testnet Faucet Bot (once per 24 h per device)
-obbyx balance      # spendable once stable (minutes, up to ~2 h on a quiet network)
+obbyx faucet                                 # buyer: asks the testnet Faucet Bot (once per 24 h per device)
+OBBYX_HOME=~/.obbyx-seller obbyx faucet      # seller: its watcher needs ≥ 100000 bytes for defensive transactions
+obbyx balance                                # spendable once stable (minutes, up to ~2 h on a quiet network)
 ```
+
+Each `OBBYX_HOME` has its own device key, so the buyer and the seller each get
+their own faucet payment.
 
 ### 3. Facilitator
 
 ```sh
 cd apps/facilitator
 pnpm db:migrate                          # creates ./data/facilitator.db (again after upgrades)
-FINALITY=accepted LOG_PRETTY=1 node dist/main.js
+FINALITY=accepted MIN_CHANNEL_TIMEOUT_SECONDS=3600 LOG_PRETTY=1 node dist/main.js
 # → http://127.0.0.1:4021   GET /supported, /health, /openapi.json
 cd ../..
 ```
 
-`FINALITY=accepted` answers as soon as the network accepted the unit, which is
-convenient for a demo. The default `stable` waits for finality (see
+Both settings are for a quick demo. `FINALITY=accepted` answers as soon as the
+network accepted the unit; the default `stable` waits for finality (see
 [Concepts](docs/guide/concepts.md#finality)).
+`MIN_CHANNEL_TIMEOUT_SECONDS=3600` accepts channels with a 1 h dispute window;
+the default is 14400 (4 h), because the watcher reacts to a close only once it
+is stable, which can take ~2 h on a quiet network.
 
-### 4. Demo seller API
+### 4. Seller watcher
+
+The watcher stores the vouchers (the seller's money) and closes channels. Keep
+it running; until the seller wallet holds at least 100000 bytes (step 2),
+channel payments are refused.
+
+```sh
+cd apps/watcher
+pnpm db:migrate
+OBBYX_HOME=~/.obbyx-seller LOG_PRETTY=1 node dist/main.js
+cd ../..
+```
+
+### 5. Demo seller API
 
 ```sh
 cd apps/demo
-PAY_TO=<seller address> SELLER_SECRET=$(openssl rand -hex 32) LOG_PRETTY=1 node dist/server.js
+PAY_TO=<seller address> SELLER_SECRET=$(openssl rand -hex 32) BATCH_MIN_CHANNEL_TIMEOUT=3600 LOG_PRETTY=1 node dist/server.js
 # → http://127.0.0.1:3402   GET /api/fortune (10000 bytes), POST /api/echo (20000 bytes)
 cd ../..
 ```
 
-### 5. Pay for a request
+### 6. Pay through a channel (`batch-settlement`)
+
+Instant, fee-free per call:
+
+```sh
+obbyx channel open <seller address> --deposit 0.0005 --window 3600
+obbyx channel status <aa>        # usable once the deposit is credited (after stability)
+obbyx pay http://127.0.0.1:3402/api/fortune --max 0.00001   # uses the channel automatically
+obbyx pay http://127.0.0.1:3402/api/fortune --max 0.00001   # next voucher, still nothing on-chain
+obbyx channel close <aa>         # declares what you spent; the seller's watcher confirms, the rest returns to you
+obbyx channel confirm <aa>       # only if the seller did not confirm within the dispute window
+```
+
+A channel payment succeeds only after the seller's watcher has durably stored
+the voucher. If the watcher is offline, channel payments are refused and the
+buyer pays with `exact` instead. Details: [Payment channels](docs/guide/channels.md).
+
+### 7. Pay with a single on-chain payment (`exact`)
+
+Without an open channel to the seller (or if the seller runs no watcher),
+`obbyx pay` pays each request with one on-chain unit:
 
 ```sh
 obbyx pay http://127.0.0.1:3402/api/fortune --max 0.00001
@@ -262,31 +303,6 @@ and returned the result with a `PAYMENT-RESPONSE` header.
 If the payment is not final within `--wait` seconds (default 600), the CLI
 prints `--payment <header>`: repeat the same command with it later; it never
 pays twice.
-
-## Payment channels
-
-Instant, fee-free per call. The seller must run a **watcher** (it stores the
-vouchers that are the seller's money and closes channels).
-
-```sh
-# seller: watcher (keep it running and funded with some bytes)
-cd apps/watcher && pnpm db:migrate
-OBBYX_HOME=~/.obbyx-seller node dist/main.js
-cd ../..
-
-# seller: offer channels in the demo
-PAY_TO=<seller address> SELLER_SECRET=… BATCH_MIN_CHANNEL_TIMEOUT=3600 node apps/demo/dist/server.js
-
-# buyer
-obbyx channel open <seller address> --deposit 0.0005 --window 3600
-obbyx channel status <aa>        # usable once the deposit is credited (after stability)
-obbyx pay http://127.0.0.1:3402/api/fortune --max 0.00001   # uses the channel automatically
-obbyx channel close <aa>         # the seller's watcher confirms; the rest returns to you
-```
-
-A channel payment succeeds only after the seller's watcher has durably stored
-the voucher. If the watcher is offline, channel payments are refused and the
-buyer pays with `exact` instead. Details: [Payment channels](docs/guide/channels.md).
 
 ## Playground
 
@@ -454,8 +470,8 @@ over the standard HTTP API (`/verify`, `/settle`, `/supported`;
 
 | Feature                                | Official packages       | obbyx SDK (`ObytePaywall`, `payingFetch`) |
 | -------------------------------------- | ----------------------- | ----------------------------------------- |
-| `exact`                                | ✅                      | ✅                                        |
 | `batch-settlement` (channels)          | ✅                      | ✅                                        |
+| `exact`                                | ✅                      | ✅                                        |
 | stored response for a repeated request | —                       | ✅                                        |
 | `payment-identifier`, spending budgets | —                       | ✅                                        |
 | x402 v1                                | ✅ client + facilitator | —                                         |
@@ -464,16 +480,16 @@ Details: [x402 compatibility](docs/guide/x402-compatibility.md).
 
 ## CLI
 
-| Command                                                                                                 | Does                                         |
-| ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `obbyx init [--network testnet\|livenet] [--force]`                                                     | create a local wallet                        |
-| `obbyx address` / `obbyx balance`                                                                       | show the address / balance                   |
-| `obbyx faucet`                                                                                          | get testnet bytes                            |
-| `obbyx pay <url> --max <GBYTE> [--method M] [--data JSON] [--header 'K: V'] [--wait SEC] [--payment H]` | call a paid API                              |
-| `obbyx channel open\|list\|status\|deposit\|close\|confirm`                                             | payment channels                             |
-| `obbyx doctor [--facilitator URL]`                                                                      | check wallet, hub, balance, pending payments |
-| `obbyx logs <files…> --binding B`                                                                       | follow one payment through JSON logs         |
-| `obbyx decode <base64>`                                                                                 | decode an x402 header                        |
+| Command                                                                                                                   | Does                                         |
+| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `obbyx init [--network testnet\|livenet] [--force]`                                                                       | create a local wallet                        |
+| `obbyx address` / `obbyx balance`                                                                                         | show the address / balance                   |
+| `obbyx faucet [--timeout SEC]`                                                                                            | get testnet bytes                            |
+| `obbyx pay <url> --max <GBYTE> [--method M] [--data JSON] [--header 'K: V'] [--wait SEC] [--payment H] [--max-fee BYTES]` | call a paid API                              |
+| `obbyx channel open\|list\|status\|deposit\|close\|confirm\|recover`                                                      | payment channels                             |
+| `obbyx doctor [--facilitator URL]`                                                                                        | check wallet, hub, balance, pending payments |
+| `obbyx logs <files…> [--binding B] [--proof P] [--aa AA] [--request R] [--level L]`                                       | follow one payment through JSON logs         |
+| `obbyx decode <base64>`                                                                                                   | decode an x402 header                        |
 
 Every command has `--help`; full reference: [CLI](docs/reference/cli.md).
 Exit codes: 0 ok, 1 error, 2 refused, 3 pending (retry later).
@@ -485,9 +501,12 @@ pnpm --filter @obbyx/facilitator db:migrate
 FACILITATOR_API_KEYS=<key> node apps/facilitator/dist/main.js
 ```
 
-Or with Docker Compose:
+Or with Docker Compose. First create the key that encrypts stored channel
+vouchers, outside the data volume (never replace it once vouchers are stored;
+on Linux it must be owned by uid 1000 with mode 0600):
 
 ```sh
+mkdir -p ~/.obbyx-facilitator && (umask 077; openssl rand -base64 32 > ~/.obbyx-facilitator/package.key)
 docker compose up -d facilitator                               # http://127.0.0.1:4021
 OBBYX_SELLER_HOME=~/.obbyx-seller docker compose --profile watcher up -d
 ```
@@ -502,15 +521,16 @@ All services use environment variables, validated at startup. Every variable
 with its default: [Configuration reference](docs/reference/configuration.md).
 The most important ones:
 
-| Variable                    | Service      | Default         | Meaning                                                         |
-| --------------------------- | ------------ | --------------- | --------------------------------------------------------------- |
-| `NETWORKS`                  | facilitator  | `obyte:testnet` | networks to serve                                               |
-| `FINALITY`                  | facilitator  | `stable`        | `stable` or `accepted`                                          |
-| `FACILITATOR_API_KEYS`      | facilitator  | —               | keys for `/verify` and `/settle` (empty = open, localhost only) |
-| `MAX_LAST_BALL_AGE_SECONDS` | facilitator  | `10800`         | tolerated lag of the network's stable point                     |
-| `PAY_TO`, `SELLER_SECRET`   | seller       | —               | where money goes; HMAC key for bindings                         |
-| `OBBYX_HOME`                | CLI, watcher | `~/.obbyx`      | wallet directory                                                |
-| `LOG_LEVEL`, `LOG_PRETTY`   | all          | `info` / —      | logging                                                         |
+| Variable                      | Service      | Default         | Meaning                                                         |
+| ----------------------------- | ------------ | --------------- | --------------------------------------------------------------- |
+| `NETWORKS`                    | facilitator  | `obyte:testnet` | networks to serve                                               |
+| `FINALITY`                    | facilitator  | `stable`        | `stable` or `accepted`                                          |
+| `FACILITATOR_API_KEYS`        | facilitator  | —               | keys for `/verify` and `/settle` (empty = open, localhost only) |
+| `MIN_CHANNEL_TIMEOUT_SECONDS` | facilitator  | `14400`         | smallest channel dispute window accepted                        |
+| `MAX_LAST_BALL_AGE_SECONDS`   | facilitator  | `10800`         | tolerated lag of the network's stable point                     |
+| `PAY_TO`, `SELLER_SECRET`     | seller       | —               | where money goes; HMAC key for bindings                         |
+| `OBBYX_HOME`                  | CLI, watcher | `~/.obbyx`      | wallet directory                                                |
+| `LOG_LEVEL`, `LOG_PRETTY`     | all          | `info` / —      | logging                                                         |
 
 ## Documentation
 
