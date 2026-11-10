@@ -1,6 +1,6 @@
 {
   "name": "@obbyx/x402-obyte",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "x402 payment mechanisms for the Obyte network: exact (on-chain unit) and batch-settlement (AA payment channels)",
   "keywords": [
     "x402",
